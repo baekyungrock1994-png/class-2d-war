@@ -1,0 +1,184 @@
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: #0a0a0a;
+  overflow: hidden;
+  font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+}
+
+#app {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+}
+
+#game-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: #1a2b1a;
+  cursor: crosshair;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #f2f2f2;
+  text-align: center;
+}
+
+.overlay h1 {
+  font-size: 42px;
+  letter-spacing: 2px;
+  margin: 0;
+}
+
+.overlay button {
+  padding: 12px 32px;
+  font-size: 18px;
+  background: #e0a800;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.overlay button:hover {
+  background: #f5c518;
+}
+
+.overlay button:disabled {
+  background: #666;
+  cursor: not-allowed;
+}
+
+#drop-canvas {
+  background: #1a2b1a;
+  border: 2px solid #666;
+  border-radius: 4px;
+  cursor: crosshair;
+  max-width: 80vmin;
+  max-height: 80vmin;
+}
+
+#hud {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  font-size: 14px;
+  user-select: none;
+  pointer-events: none;
+}
+
+#health-bar-wrap {
+  position: relative;
+  width: 220px;
+  height: 22px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid #444;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+#health-bar-fill {
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, #d9342b, #ef5350);
+  transition: width 0.15s ease-out;
+}
+
+#health-text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+}
+
+#ammo-text, #alive-text, #zone-text {
+  margin-bottom: 4px;
+  font-size: 15px;
+}
+
+#minimap {
+  margin-top: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid #555;
+  border-radius: 4px;
+}
+
+#inventory-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+}
+
+.inv-slot {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 2px solid #444;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.35;
+  transition: opacity 0.15s ease-out, border-color 0.15s ease-out;
+}
+
+.inv-slot.owned {
+  opacity: 1;
+}
+
+.inv-slot.active {
+  border-color: #e0a800;
+  box-shadow: 0 0 8px rgba(224, 168, 0, 0.7);
+}
+
+.inv-key {
+  position: absolute;
+  top: 2px;
+  left: 5px;
+  font-size: 11px;
+  font-weight: bold;
+  color: #ccc;
+}
+
+.inv-label {
+  font-size: 11px;
+  margin-top: 6px;
+}
+
+.inv-count {
+  position: absolute;
+  bottom: 2px;
+  right: 5px;
+  font-size: 12px;
+  font-weight: bold;
+  color: #f5c518;
+}

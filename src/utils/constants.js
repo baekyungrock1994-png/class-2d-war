@@ -1,0 +1,83 @@
+export const WORLD_WIDTH = 4000;
+export const WORLD_HEIGHT = 4000;
+
+export const PLAYER_RADIUS = 14;
+export const PLAYER_SPEED = 220; // px/sec
+export const PLAYER_MAX_HEALTH = 100;
+
+export const BOT_COUNT = 19; // + 1 human player = 20 total, like a small match
+
+export const CAMERA_ZOOM = 1.8;
+
+export const FALL_DURATION_MS = 3200;
+
+export const WEAPONS = {
+  fist: {
+    name: "주먹",
+    damage: 16,
+    fireRateMs: 450,
+    melee: true,
+    range: 55,
+  },
+  pistol: {
+    name: "권총",
+    damage: 12,
+    fireRateMs: 350,
+    bulletSpeed: 900,
+    magSize: 12,
+    reserveAmmo: 36,
+    spread: 0.05,
+  },
+  rifle: {
+    name: "돌격소총",
+    damage: 20,
+    fireRateMs: 140,
+    bulletSpeed: 1300,
+    magSize: 30,
+    reserveAmmo: 90,
+    spread: 0.03,
+  },
+  shotgun: {
+    name: "샷건",
+    damage: 14,
+    pellets: 6,
+    fireRateMs: 800,
+    bulletSpeed: 1000,
+    magSize: 6,
+    reserveAmmo: 18,
+    spread: 0.18,
+  },
+};
+
+export const BULLET_RADIUS = 3;
+export const BULLET_LIFETIME_MS = 1500;
+
+export const MELEE_SWING_MS = 220;
+
+// Number-key inventory slots: 1-4 switch equipped weapon (if owned), 5 consumes a medkit.
+export const WEAPON_SLOTS = [
+  { slot: "1", code: "Digit1", weapon: "fist" },
+  { slot: "2", code: "Digit2", weapon: "pistol" },
+  { slot: "3", code: "Digit3", weapon: "rifle" },
+  { slot: "4", code: "Digit4", weapon: "shotgun" },
+];
+export const MEDKIT_SLOT = { slot: "5", code: "Digit5" };
+export const MEDKIT_HEAL_AMOUNT = 40;
+
+export const CRATE_INTERACT_RADIUS = 30;
+export const CRATE_OPEN_MS = 2500;
+
+export const ZONE_PHASES = [
+  { holdMs: 12000, shrinkMs: 14000, radiusRatio: 1.0 },
+  { holdMs: 10000, shrinkMs: 12000, radiusRatio: 0.68 },
+  { holdMs: 9000, shrinkMs: 10000, radiusRatio: 0.45 },
+  { holdMs: 8000, shrinkMs: 9000, radiusRatio: 0.28 },
+  { holdMs: 7000, shrinkMs: 8000, radiusRatio: 0.15 },
+  { holdMs: 6000, shrinkMs: 7000, radiusRatio: 0.06 },
+  { holdMs: 5000, shrinkMs: 5000, radiusRatio: 0.0 },
+];
+
+export const ZONE_DAMAGE_PER_SEC = 4;
+
+export const OBSTACLE_COUNT = 70;
+export const LOOT_COUNT = 60;
