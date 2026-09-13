@@ -1,0 +1,40 @@
+{
+  "rules": {
+    "rooms": {
+      "$roomId": {
+        ".read": "auth != null",
+        "hostId": {
+          ".write": "auth != null && (!data.exists() || data.val() === auth.uid)"
+        },
+        "status": {
+          ".write": "auth != null && root.child('rooms/' + $roomId + '/hostId').val() === auth.uid"
+        },
+        "createdAt": {
+          ".write": "auth != null && !data.exists()"
+        },
+        "startedAt": {
+          ".write": "auth != null && root.child('rooms/' + $roomId + '/hostId').val() === auth.uid"
+        },
+        "map": {
+          ".write": "auth != null && root.child('rooms/' + $roomId + '/hostId').val() === auth.uid"
+        },
+        "snapshot": {
+          ".write": "auth != null && root.child('rooms/' + $roomId + '/hostId').val() === auth.uid"
+        },
+        "result": {
+          ".write": "auth != null && root.child('rooms/' + $roomId + '/hostId').val() === auth.uid"
+        },
+        "lobby": {
+          "$uid": {
+            ".write": "auth != null && auth.uid === $uid"
+          }
+        },
+        "input": {
+          "$uid": {
+            ".write": "auth != null && auth.uid === $uid"
+          }
+        }
+      }
+    }
+  }
+}

@@ -45,10 +45,59 @@
       </div>
     </div>
 
+    <div id="local-death-banner" class="hidden">사망 · 관전 중</div>
+
+    <div id="user-badge" class="hidden">
+      <span id="user-name-text"></span>
+      <button id="logout-btn" class="link-btn">로그아웃</button>
+    </div>
+
+    <div id="login-screen" class="overlay hidden">
+      <h1>2D 배틀그라운드</h1>
+      <p>온라인 매치를 하려면 Google 계정으로 로그인해주세요</p>
+      <div class="button-row">
+        <button id="google-login-btn">Google로 로그인</button>
+      </div>
+      <p id="login-error-text" class="error-text hidden"></p>
+      <button id="login-back-btn" class="link-btn">뒤로</button>
+    </div>
+
     <div id="start-screen" class="overlay">
       <h1>2D 배틀그라운드</h1>
       <p>WASD 이동 · 마우스 조준/좌클릭 공격 · R 재장전 · 1~4 무기 전환 · 5 의료품 사용</p>
-      <button id="start-btn">게임 시작</button>
+      <div class="button-row">
+        <button id="solo-btn">혼자 연습 (오프라인)</button>
+        <button id="online-btn">온라인 매치</button>
+      </div>
+    </div>
+
+    <div id="online-menu-screen" class="overlay hidden">
+      <h1>온라인 매치</h1>
+      <label class="field-label" for="player-name-input">닉네임</label>
+      <input id="player-name-input" type="text" maxlength="12" placeholder="닉네임을 입력하세요" />
+
+      <div class="button-row">
+        <button id="create-room-btn">방 만들기</button>
+      </div>
+
+      <div class="join-row">
+        <input id="room-code-input" type="text" maxlength="5" placeholder="방 코드 5자리" />
+        <button id="join-room-btn">참가하기</button>
+      </div>
+
+      <p id="online-error-text" class="error-text hidden"></p>
+      <button id="online-back-btn" class="link-btn">뒤로</button>
+    </div>
+
+    <div id="room-lobby-screen" class="overlay hidden">
+      <h1>대기실</h1>
+      <p id="room-code-display">방 코드: ----</p>
+      <ul id="lobby-player-list"></ul>
+      <p id="lobby-status-text">호스트가 매치를 시작하길 기다리는 중...</p>
+      <div class="button-row">
+        <button id="lobby-start-btn" class="hidden">매치 시작</button>
+        <button id="lobby-leave-btn">나가기</button>
+      </div>
     </div>
 
     <div id="drop-screen" class="overlay hidden">
@@ -58,9 +107,15 @@
       <button id="drop-confirm-btn" disabled>낙하 시작</button>
     </div>
 
+    <div id="guest-waiting-screen" class="overlay hidden">
+      <h1>낙하 대기 중...</h1>
+      <p>호스트가 매치를 진행하고 있어요. 곧 합류합니다.</p>
+    </div>
+
     <div id="end-screen" class="overlay hidden">
       <h1 id="end-title">게임 종료</h1>
       <button id="restart-btn">다시 시작</button>
+      <button id="end-menu-btn" class="hidden">메인 화면으로</button>
     </div>
   </div>
 

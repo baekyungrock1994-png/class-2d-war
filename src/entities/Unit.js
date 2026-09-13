@@ -1,5 +1,6 @@
 import { PLAYER_RADIUS, PLAYER_MAX_HEALTH, WEAPONS, WORLD_WIDTH, WORLD_HEIGHT, FALL_DURATION_MS, MELEE_SWING_MS } from "../utils/constants.js";
 import { clamp, circleRectPush } from "../utils/math.js";
+import { drawUnit } from "../render/drawUnit.js";
 
 let nextId = 1;
 
@@ -152,133 +153,8 @@ export class Unit {
 
   // Draws directly in world-space coordinates; the caller has already applied the
   // camera's zoom/pan transform, so no manual screen-space conversion happens here.
+  // Shared with guest-side network rendering — see src/render/drawUnit.js.
   drawBody(ctx, colorAlive, colorDead) {
-    if (this.falling) {
-      this._drawFalling(ctx, colorAlive);
-      return;
-    }
-
-    ctx.save();
-    ctx.translate(this.x, this.y);
-    ctx.rotate(this.facing);
-
-    ctx.fillStyle = this.alive ? colorAlive : colorDead;
-    ctx.beginPath();
-    ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = "#111";
-    ctx.lineWidth = 2;
-    ctx.stroke();
-
-    if (this.weapon.melee) {
-      this._drawFists(ctx);
-    } else {
-      const reach = this.radius + 14;
-      ctx.strokeStyle = "#222";
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.moveTo(0, 0);
-      ctx.lineTo(reach, 0);
-      ctx.stroke();
-    }
-
-    ctx.restore();
-
-    if (this.alive) {
-      ctx.fillStyle = "#000a";
-      ctx.fillRect(this.x - 18, this.y - this.radius - 14, 36, 5);
-      ctx.fillStyle = "#4caf50";
-      ctx.fillRect(this.x - 18, this.y - this.radius - 14, 36 * (this.health / this.maxHealth), 5);
-
-      ctx.fillStyle = "#fff";
-      ctx.font = "11px sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText(this.name, this.x, this.y - this.radius - 18);
-    }
-  }
-
-  // Two small fists in front of the body, standing in for the "no weapon" look.
-  // They rest near the chest and punch forward when a melee swing is active.
-  _drawFists(ctx) {
-    const now = performance.now();
-    let swingT = 0;
-    if (this.meleeSwingUntil > now) {
-      const remain = this.meleeSwingUntil - now;
-      swingT = 1 - clamp(remain / MELEE_SWING_MS, 0, 1);
-    }
-    const punch = Math.sin(swingT * Math.PI); // 0 -> 1 -> 0 across the swing
-
-    const restX = this.radius * 0.55;
-    const sideY = this.radius * 0.55;
-    const fistRadius = this.radius * 0.42;
-    const reachDistance = this.radius * 0.9;
-
-    const leadOffset = punch * reachDistance;
-    const followOffset = punch * reachDistance * 0.3;
-    const fistA = this.punchHand === 0 ? leadOffset : followOffset;
-    const fistB = this.punchHand === 1 ? leadOffset : followOffset;
-
-    ctx.fillStyle = "#f2b48c";
-    ctx.strokeStyle = "#a5673f";
-    ctx.lineWidth = 1.5;
-
-    ctx.beginPath();
-    ctx.arc(restX + fistA, -sideY, fistRadius, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.arc(restX + fistB, sideY, fistRadius, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-  }
-
-  // Simple top-down parachute illusion: a fixed ground shadow plus a body that
-  // starts small/high and grows as it drops, with a canopy shown above it.
-  _drawFalling(ctx, colorAlive) {
-    const t = clamp(this.fallElapsed / this.fallDurationMs, 0, 1);
-    const heightOffset = (1 - t) * 90;
-    const scale = 0.55 + 0.45 * t;
-
-    ctx.save();
-    ctx.globalAlpha = 0.35 + 0.25 * t;
-    ctx.fillStyle = "#000";
-    ctx.beginPath();
-    ctx.ellipse(this.x, this.y, this.radius * 0.9 * t + 4, this.radius * 0.5 * t + 2, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-
-    const drawY = this.y - heightOffset;
-
-    if (t < 0.92) {
-      ctx.save();
-      ctx.translate(this.x, drawY - this.radius * 2.2 * scale);
-      ctx.fillStyle = "#e0a800";
-      ctx.beginPath();
-      ctx.ellipse(0, 0, this.radius * 1.6 * scale, this.radius * 0.9 * scale, 0, Math.PI, 0);
-      ctx.fill();
-      ctx.strokeStyle = "#333";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(-this.radius * 1.6 * scale, 0);
-      ctx.lineTo(0, this.radius * 1.8 * scale);
-      ctx.moveTo(this.radius * 1.6 * scale, 0);
-      ctx.lineTo(0, this.radius * 1.8 * scale);
-      ctx.stroke();
-      ctx.restore();
-    }
-
-    ctx.save();
-    ctx.translate(this.x, drawY);
-    ctx.scale(scale, scale);
-    ctx.rotate(this.facing);
-    ctx.fillStyle = colorAlive;
-    ctx.beginPath();
-    ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = "#111";
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.restore();
+    drawUnit(ctx, this, colorAlive, colorDead);
   }
 }

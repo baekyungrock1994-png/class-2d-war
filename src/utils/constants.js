@@ -81,3 +81,11 @@ export const ZONE_DAMAGE_PER_SEC = 4;
 
 export const OBSTACLE_COUNT = 70;
 export const LOOT_COUNT = 60;
+
+// Online play (Firebase Realtime Database)
+export const ONLINE_TOTAL_SLOTS = 10; // real players + bots filling the rest
+export const ROOM_CODE_LENGTH = 5;
+export const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/1/I
+export const INPUT_SEND_MS = 60; // guest -> host
+export const SNAPSHOT_SEND_MS = 90; // host -> everyone
+export const HOST_STALE_MS = 4000; // no snapshot for this long => host presumed gone

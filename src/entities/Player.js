@@ -33,8 +33,15 @@ export class Player extends Unit {
       this.applyMovement(dx, dy, dtSec, obstacles);
     }
 
-    const worldMouse = camera.screenToWorld(input.mouseX, input.mouseY);
-    this.facing = angleTo(this.x, this.y, worldMouse.x, worldMouse.y);
+    if (typeof input.remoteFacing === "number") {
+      // Driven by RemoteInputAdapter (host simulating a guest) — the guest
+      // already computed this angle against its own camera/mouse and sent the
+      // result directly, since it doesn't share the host's camera transform.
+      this.facing = input.remoteFacing;
+    } else {
+      const worldMouse = camera.screenToWorld(input.mouseX, input.mouseY);
+      this.facing = angleTo(this.x, this.y, worldMouse.x, worldMouse.y);
+    }
 
     if (this.falling) {
       this.fallElapsed += dtMs;

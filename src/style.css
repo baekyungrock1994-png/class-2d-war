@@ -182,3 +182,133 @@ html, body {
   font-weight: bold;
   color: #f5c518;
 }
+
+#local-death-banner {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 20px;
+  background: rgba(120, 20, 20, 0.85);
+  border: 1px solid #d9342b;
+  border-radius: 4px;
+  color: #fff;
+  font-weight: bold;
+  letter-spacing: 1px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+}
+
+.button-row {
+  display: flex;
+  gap: 12px;
+}
+
+#user-badge {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid #444;
+  border-radius: 20px;
+  color: #fff;
+  font-size: 13px;
+}
+
+#google-login-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field-label {
+  font-size: 13px;
+  color: #ccc;
+  align-self: flex-start;
+  margin-left: 2px;
+}
+
+.overlay input[type="text"] {
+  padding: 10px 14px;
+  font-size: 16px;
+  border-radius: 4px;
+  border: 1px solid #555;
+  background: #1a1a1a;
+  color: #fff;
+  text-align: center;
+  width: 220px;
+}
+
+.overlay input[type="text"]::placeholder {
+  color: #777;
+}
+
+#room-code-input {
+  text-transform: uppercase;
+  letter-spacing: 3px;
+}
+
+.join-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.join-row input {
+  width: 140px;
+}
+
+.error-text {
+  color: #ef5350;
+  font-size: 14px;
+  margin: 0;
+}
+
+.link-btn {
+  background: none !important;
+  color: #aaa !important;
+  font-weight: normal !important;
+  text-decoration: underline;
+  padding: 4px 8px !important;
+}
+
+#room-code-display {
+  font-size: 28px;
+  font-weight: bold;
+  letter-spacing: 6px;
+  color: #f5c518;
+  margin: 0;
+}
+
+#lobby-player-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 240px;
+}
+
+#lobby-player-list li {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  padding: 8px 16px;
+  font-size: 15px;
+}
+
+#lobby-player-list li.is-host::after {
+  content: " (호스트)";
+  color: #f5c518;
+  font-size: 12px;
+}
+
+#lobby-status-text {
+  font-size: 14px;
+  color: #bbb;
+  margin: 0;
+}

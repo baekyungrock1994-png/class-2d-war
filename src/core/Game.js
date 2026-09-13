@@ -6,6 +6,8 @@ import { Bot } from "../entities/Bot.js";
 import { Camera } from "./Camera.js";
 import { Input } from "./Input.js";
 import { HUD } from "../ui/HUD.js";
+import { RemoteInputAdapter } from "../network/RemoteInputAdapter.js";
+import { getUid } from "../network/firebase.js";
 import {
   BOT_COUNT,
   PLAYER_RADIUS,
@@ -13,6 +15,8 @@ import {
   CRATE_OPEN_MS,
   ZONE_DAMAGE_PER_SEC,
   WEAPONS,
+  MEDKIT_HEAL_AMOUNT,
+  SNAPSHOT_SEND_MS,
 } from "../utils/constants.js";
 import { dist } from "../utils/math.js";
 
@@ -23,6 +27,9 @@ const BOT_NAMES = [
   "하이에나", "말벌", "곰", "상어", "살모사", "치타", "퓨마", "송골매", "들개", "맹수",
 ];
 
+const round1 = (n) => Math.round(n * 10) / 10;
+const round2 = (n) => Math.round(n * 100) / 100;
+
 export class Game {
   constructor(canvas) {
     this.canvas = canvas;
@@ -32,7 +39,8 @@ export class Game {
 
     this.camera = new Camera(canvas.width, canvas.height);
 
-    this.onGameOver = null; // set by main.js: (didWin: boolean) => void
+    this.onGameOver = null; // (didWin: boolean) => void
+    this.onLocalDeath = null; // () => void — host's own avatar died but the match continues
 
     this._resize();
     window.addEventListener("resize", () => this._resize());
@@ -40,6 +48,7 @@ export class Game {
     this.running = false;
     this._rafId = null;
     this._lastTs = 0;
+    this.mode = "solo"; // "solo" | "host"
   }
 
   _resize() {
@@ -54,19 +63,50 @@ export class Game {
 
   // Generates the map/zone/loot/bots so a drop-point selection screen can preview
   // them, but does not spawn the player or start the loop yet — see beginDrop().
-  prepareMatch() {
+  // Pass a RoomService to run as the online host: this publishes the map/status to
+  // Firebase and folds connected guests into the simulation as they drop in.
+  prepareMatch(roomService = null, botCount = BOT_COUNT) {
     this.map = new GameMap();
     this.safeZone = new SafeZone();
     this.loot = generateLoot(this.map);
 
     this.bots = [];
-    for (let i = 0; i < BOT_COUNT; i++) {
+    for (let i = 0; i < botCount; i++) {
       const spawn = this.map.findFreeSpawn(PLAYER_RADIUS);
       this.bots.push(new Bot(spawn.x, spawn.y, BOT_NAMES[i % BOT_NAMES.length]));
     }
 
     this.bullets = [];
     this.player = null;
+
+    this.roomService = roomService;
+    this.mode = roomService ? "host" : "solo";
+    this.remotePlayers = new Map(); // uid -> Player
+    this._remoteAdapters = new Map(); // uid -> RemoteInputAdapter
+    this._medkitSeq = new Map(); // uid -> last seen medkitSeq
+    this._latestGuestInputs = {};
+    this._latestLobby = {};
+    this._matchEnded = false;
+    this._localDeathNotified = false;
+    this._lastSnapshotSentAt = 0;
+    this._winnerUid = null;
+
+    if (this.mode === "host") {
+      this.hostUid = getUid();
+      this.roomService.onAllInput((val) => {
+        this._latestGuestInputs = val || {};
+      });
+      this.roomService.onLobby((val) => {
+        this._latestLobby = val || {};
+      });
+      this.roomService.startMatch(this._serializeMap()).catch((err) => {
+        console.error("매치 시작 정보를 공유하지 못했습니다:", err);
+      });
+    }
+  }
+
+  _serializeMap() {
+    return { obstacles: this.map.obstacles, terrainPatches: this.map.terrainPatches };
   }
 
   // Spawns the player at the chosen drop point, parachuting in, and starts the loop.
@@ -100,11 +140,14 @@ export class Game {
   }
 
   _allUnits() {
-    return [this.player, ...this.bots];
+    return [this.player, ...this.bots, ...this.remotePlayers.values()];
   }
 
   _update(dtMs) {
     const nowMs = performance.now();
+
+    if (this.mode === "host") this._processGuestDropRequests();
+
     const units = this._allUnits();
 
     this.safeZone.update(dtMs);
@@ -114,6 +157,8 @@ export class Game {
       const newBullets = this.player.tryShoot(nowMs, units);
       this.bullets.push(...newBullets);
     }
+
+    if (this.mode === "host") this._updateRemotePlayers(dtMs, nowMs, units);
 
     for (const bot of this.bots) {
       if (!bot.alive) continue;
@@ -141,17 +186,91 @@ export class Game {
 
     this._handleCrateOpening(dtMs);
 
-    this.camera.follow(this.player);
+    if (this.player.alive) this.camera.follow(this.player);
 
-    const aliveBots = this.bots.filter((b) => b.alive).length;
-    this.hud.update(this.player, aliveBots + (this.player.alive ? 1 : 0), this.safeZone);
+    const aliveCount = this._allUnits().filter((u) => u.alive).length;
+    this.hud.update(this.player, aliveCount, this.safeZone);
 
-    if (!this.player.alive) {
-      this._endGame(false);
+    if (this.mode === "solo") {
+      if (!this.player.alive) {
+        this._endGame(false);
+        return;
+      }
+      if (this.bots.filter((b) => b.alive).length === 0) {
+        this._endGame(true);
+      }
       return;
     }
-    if (aliveBots === 0) {
-      this._endGame(true);
+
+    // Host mode: the match keeps running after the host's own avatar dies —
+    // other real players and bots may still be fighting it out.
+    if (!this.player.alive && !this._localDeathNotified) {
+      this._localDeathNotified = true;
+      if (this.onLocalDeath) this.onLocalDeath();
+    }
+
+    if (!this._matchEnded) {
+      const aliveUnits = this._allUnits().filter((u) => u.alive);
+      if (aliveUnits.length <= 1) {
+        this._matchEnded = true;
+        this._endMatch(aliveUnits[0] ?? null);
+      }
+    }
+
+    if (nowMs - this._lastSnapshotSentAt >= SNAPSHOT_SEND_MS || this._matchEnded) {
+      this._lastSnapshotSentAt = nowMs;
+      this.roomService.sendSnapshot(this._buildSnapshot(nowMs)).catch(() => {});
+    }
+  }
+
+  // Folds newly-dropped guests into the simulation and drops guests who
+  // disconnected (their lobby entry disappears via Firebase onDisconnect).
+  _processGuestDropRequests() {
+    for (const [uid, payload] of Object.entries(this._latestGuestInputs)) {
+      if (uid === this.hostUid || this.remotePlayers.has(uid)) continue;
+      const req = payload?.dropRequest;
+      if (!req) continue;
+
+      const p = new Player(req.x, req.y);
+      p.name = this._latestLobby[uid]?.name || "플레이어";
+      p.networkUid = uid;
+      p.startFall();
+      this.remotePlayers.set(uid, p);
+      this._remoteAdapters.set(uid, new RemoteInputAdapter());
+      this._medkitSeq.set(uid, 0);
+    }
+
+    for (const uid of [...this.remotePlayers.keys()]) {
+      if (!(uid in this._latestLobby)) {
+        this.remotePlayers.delete(uid);
+        this._remoteAdapters.delete(uid);
+        this._medkitSeq.delete(uid);
+      }
+    }
+  }
+
+  _updateRemotePlayers(dtMs, nowMs, units) {
+    for (const [uid, rp] of this.remotePlayers) {
+      if (!rp.alive) continue;
+      const payload = this._latestGuestInputs[uid] || {};
+      const adapter = this._remoteAdapters.get(uid);
+      adapter.applyPayload(payload);
+
+      rp.update(dtMs, adapter, this.camera, this.map.obstacles);
+      if (adapter.mouseDown) {
+        this.bullets.push(...rp.tryShoot(nowMs, units));
+      }
+
+      if (rp.falling) continue;
+
+      if (typeof payload.desiredWeapon === "string" && payload.desiredWeapon !== rp.weaponKey) {
+        rp.equipWeapon(payload.desiredWeapon);
+      }
+      const lastSeq = this._medkitSeq.get(uid) ?? 0;
+      if (typeof payload.medkitSeq === "number" && payload.medkitSeq > lastSeq) {
+        this._medkitSeq.set(uid, payload.medkitSeq);
+        rp.useMedkit(MEDKIT_HEAL_AMOUNT);
+      }
     }
   }
 
@@ -198,9 +317,9 @@ export class Game {
     }
   }
 
-  // Crates fill the unit's inventory rather than auto-equipping — the player picks
-  // an active weapon/medkit with number keys (see WEAPON_SLOTS), while bots use a
-  // simple "always take the stronger weapon" heuristic since they have no keyboard.
+  // Crates fill the unit's inventory rather than auto-equipping — a human player
+  // (local or remote) picks an active weapon/medkit with number keys (see
+  // WEAPON_SLOTS), while bots use a simple "always take the stronger weapon" rule.
   _grantCrateContents(unit, crate) {
     if (crate.type === "weapon" && WEAPONS[crate.weapon]) {
       unit.acquireWeapon(crate.weapon);
@@ -217,6 +336,94 @@ export class Game {
   _endGame(didWin) {
     this.stop();
     if (this.onGameOver) this.onGameOver(didWin);
+  }
+
+  _endMatch(winnerUnit) {
+    this._winnerUid = winnerUnit === this.player ? this.hostUid : (winnerUnit?.networkUid ?? null);
+    this.stop();
+    if (this.onGameOver) this.onGameOver(winnerUnit === this.player);
+  }
+
+  // `meleeSwingUntil` is an absolute performance.now() timestamp, which is only
+  // meaningful within this process's own clock — a guest's performance.now() runs
+  // on a different epoch entirely. Send the remaining duration instead; the
+  // receiver re-anchors it to its own clock when the snapshot arrives (see
+  // GuestView's _hydrateSnapshot).
+  _serializeUnit(unit, nowMs) {
+    return {
+      x: round1(unit.x),
+      y: round1(unit.y),
+      facing: round2(unit.facing),
+      health: Math.round(unit.health),
+      maxHealth: unit.maxHealth,
+      alive: unit.alive,
+      falling: unit.falling,
+      fallElapsed: Math.round(unit.fallElapsed),
+      fallDurationMs: unit.fallDurationMs,
+      radius: unit.radius,
+      weaponKey: unit.weaponKey,
+      meleeSwingRemainingMs: Math.max(0, Math.round(unit.meleeSwingUntil - nowMs)),
+      punchHand: unit.punchHand,
+      name: unit.name,
+    };
+  }
+
+  _buildSnapshot(nowMs) {
+    const players = {};
+    players[this.hostUid] = {
+      ...this._serializeUnit(this.player, nowMs),
+      mag: this.player.mag,
+      reserveAmmo: this.player.reserveAmmo,
+      medkitCount: this.player.medkitCount,
+      ownedWeapons: [...this.player.ownedWeapons],
+    };
+    for (const [uid, rp] of this.remotePlayers) {
+      players[uid] = {
+        ...this._serializeUnit(rp, nowMs),
+        mag: rp.mag,
+        reserveAmmo: rp.reserveAmmo,
+        medkitCount: rp.medkitCount,
+        ownedWeapons: [...rp.ownedWeapons],
+      };
+    }
+
+    const bots = {};
+    this.bots.forEach((b, i) => {
+      bots[`bot_${i}`] = this._serializeUnit(b, nowMs);
+    });
+
+    const loot = {};
+    for (const item of this.loot) {
+      loot[item.id] = {
+        x: round1(item.x),
+        y: round1(item.y),
+        collected: item.collected,
+        progress: Math.round(item.progress),
+        openerId: item.openerId ?? null,
+      };
+    }
+
+    const bullets = this.bullets.map((b) => ({ x: round1(b.x), y: round1(b.y) }));
+
+    return {
+      players,
+      bots,
+      loot,
+      bullets,
+      safeZone: {
+        centerX: round1(this.safeZone.centerX),
+        centerY: round1(this.safeZone.centerY),
+        currentRadius: round1(this.safeZone.currentRadius),
+        targetCenter: { x: round1(this.safeZone.targetCenter.x), y: round1(this.safeZone.targetCenter.y) },
+        targetRadius: round1(this.safeZone.targetRadius),
+        state: this.safeZone.state,
+        phaseIndex: this.safeZone.phaseIndex,
+        timeUntilNextShrinkMs: Math.round(this.safeZone.timeUntilNextShrinkMs()),
+      },
+      aliveCount: this._allUnits().filter((u) => u.alive).length,
+      matchOver: this._matchEnded,
+      winnerUid: this._winnerUid,
+    };
   }
 
   _draw() {
@@ -236,6 +443,9 @@ export class Game {
 
     for (const bot of this.bots) {
       if (bot.alive) bot.draw(ctx);
+    }
+    for (const rp of this.remotePlayers.values()) {
+      if (rp.alive) rp.drawBody(ctx, "#b565d8", "#555");
     }
     for (const bullet of this.bullets) bullet.draw(ctx);
 
