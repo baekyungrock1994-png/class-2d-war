@@ -8,7 +8,7 @@
 export const firebaseConfig = {
   apiKey: "AIzaSyDeh1NJBXA1TQmZsX-yeY-AjM8IP5mbjEE",
   authDomain: "class-2d-war.firebaseapp.com",
-  databaseURL: "REPLACE_WITH_REALTIME_DATABASE_URL",
+  databaseURL: "https://class-2d-war-default-rtdb.asia-southeast1.firebasedatabase.app",
   projectId: "class-2d-war",
   storageBucket: "class-2d-war.firebasestorage.app",
   messagingSenderId: "368321155958",
