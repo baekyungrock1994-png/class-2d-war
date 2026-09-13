@@ -1,21 +1,23 @@
 import { Camera } from "./Camera.js";
 import { Input } from "./Input.js";
 import { HUD } from "../ui/HUD.js";
-import { GameMap } from "../world/GameMap.js";
+import { GameMap, isHiddenInBushes } from "../world/GameMap.js";
 import { SafeZone } from "../world/SafeZone.js";
 import { drawLoot } from "../world/Loot.js";
 import { drawUnit } from "../render/drawUnit.js";
+import { Player } from "../entities/Player.js";
 import {
-  WEAPONS,
-  WEAPON_SLOTS,
   MEDKIT_SLOT,
   INPUT_SEND_MS,
   WORLD_WIDTH,
   WORLD_HEIGHT,
   BULLET_RADIUS,
   HOST_STALE_MS,
+  HIDDEN_REVEAL_RANGE,
+  REMOTE_SMOOTHING_PER_SEC,
+  RECONCILE_SNAP_DISTANCE,
 } from "../utils/constants.js";
-import { angleTo } from "../utils/math.js";
+import { angleTo, dist } from "../utils/math.js";
 
 const FULL_MAP_ZONE = {
   centerX: WORLD_WIDTH / 2,
@@ -27,11 +29,15 @@ const FULL_MAP_ZONE = {
   targetRadius: Math.min(WORLD_WIDTH, WORLD_HEIGHT) / 2,
 };
 
-// The non-host side of an online match: no local simulation at all, just a
-// thin loop that sends this player's input up to the host and renders
-// whatever the host's latest snapshot says the world looks like. Reuses the
-// same rendering code (GameMap/SafeZone/drawLoot/drawUnit) as the host and
-// solo modes by feeding it plain objects shaped like the real classes.
+// The non-host side of an online match. Its own player is a *real* Player
+// instance, driven by the local keyboard/mouse exactly like the host's —
+// movement, aiming, falling, and weapon/medkit switches all render instantly
+// instead of waiting on a host round-trip. Health, ammo, and inventory grants
+// are still host-authoritative and get synced in from each snapshot, and
+// position is softly reconciled toward the host's copy to correct any drift.
+// Every other entity (bots, other real players, bullets) is pure host state,
+// eased toward its latest reported position each frame so it glides instead
+// of jumping between snapshots.
 export class GuestView {
   constructor(canvas, roomService, myUid) {
     this.canvas = canvas;
@@ -43,20 +49,21 @@ export class GuestView {
     this.camera = new Camera(canvas.width, canvas.height);
 
     this.mapData = null;
+    this.myPlayer = null;
     this.snapshot = null;
+    this._remoteRender = new Map(); // uid/botId -> eased {x, y} for smooth rendering
+
     this.running = false;
     this._rafId = null;
+    this._lastTs = 0;
     this._lastSendAt = 0;
     this._medkitSeq = 0;
-    this._selectedWeapon = "fist";
     this._matchOverNotified = false;
-    this._spawnNotified = false;
     this._localDeathNotified = false;
     this._hostLostNotified = false;
     this._lastSnapshotAt = 0;
 
     this.onGameOver = null; // (didWin: boolean) => void
-    this.onSpawned = null; // () => void — fires once this player appears in a snapshot
     this.onLocalDeath = null; // () => void — this player died but the match continues
     this.onHostLost = null; // () => void — no snapshot for HOST_STALE_MS; host likely disconnected
 
@@ -79,14 +86,24 @@ export class GuestView {
     this.mapData = mapData;
   }
 
+  // Starts falling immediately at the chosen point — no waiting on the host to
+  // acknowledge the drop request (which is still sent separately so the host
+  // spawns an authoritative copy of this player).
+  beginLocalDrop(x, y) {
+    this.myPlayer = new Player(x, y);
+    this.myPlayer.startFall();
+    this.start();
+  }
+
   start() {
     this.hud.show();
     this.running = true;
+    this._lastTs = performance.now();
     this._lastSnapshotAt = performance.now();
     this.roomService.onSnapshot((snap) => {
       this.snapshot = this._hydrateSnapshot(snap);
       this._lastSnapshotAt = performance.now();
-      this._checkSpawned();
+      this._reconcileMyPlayer();
       this._checkLocalDeath();
       this._checkMatchOver();
     });
@@ -104,14 +121,20 @@ export class GuestView {
     window.removeEventListener("resize", this._resizeHandler);
   }
 
-  _loop() {
+  _loop(ts) {
     if (!this.running) return;
+    const dtMs = Math.min(50, ts - this._lastTs);
+    this._lastTs = ts;
+
     this._checkHostAlive();
     if (!this.running) return; // _checkHostAlive may have stopped us
+
+    this._updateMyPlayer(dtMs);
     this._sendInputThrottled();
-    this._draw();
+    this._draw(dtMs);
     this.input.endFrame();
-    this._rafId = requestAnimationFrame(() => this._loop());
+
+    this._rafId = requestAnimationFrame((t) => this._loop(t));
   }
 
   _checkHostAlive() {
@@ -123,20 +146,30 @@ export class GuestView {
     }
   }
 
+  // Locally simulates this player's own movement/aim/falling/weapon-switch —
+  // the same Player.update() the host runs for its own local player. Melee
+  // swings are triggered locally too (instant animation feedback), but with no
+  // target list, so no local damage is ever applied — hits stay host-authoritative.
+  _updateMyPlayer(dtMs) {
+    if (!this.myPlayer || !this.myPlayer.alive) return;
+    this.myPlayer.update(dtMs, this.input, this.camera, this.mapData?.obstacles ?? []);
+    if (this.input.mouseDown) this.myPlayer.tryShoot(performance.now(), []);
+
+    // Computed locally (not synced from the snapshot) so the fade-when-hidden
+    // feedback is instant, same as the host sees for its own player.
+    this.myPlayer.hidden =
+      !this.myPlayer.falling && isHiddenInBushes(this.myPlayer.x, this.myPlayer.y, this.mapData?.bushes ?? []);
+  }
+
   _sendInputThrottled() {
     const now = performance.now();
     if (now - this._lastSendAt < INPUT_SEND_MS) return;
     this._lastSendAt = now;
+    if (!this.myPlayer) return;
 
-    const me = this.snapshot?.players?.[this.myUid];
-    const myX = me?.x ?? WORLD_WIDTH / 2;
-    const myY = me?.y ?? WORLD_HEIGHT / 2;
     const worldMouse = this.camera.screenToWorld(this.input.mouseX, this.input.mouseY);
-    const facing = angleTo(myX, myY, worldMouse.x, worldMouse.y);
+    const facing = angleTo(this.myPlayer.x, this.myPlayer.y, worldMouse.x, worldMouse.y);
 
-    for (const { code, weapon } of WEAPON_SLOTS) {
-      if (this.input.wasJustPressed(code)) this._selectedWeapon = weapon;
-    }
     if (this.input.wasJustPressed(MEDKIT_SLOT.code)) this._medkitSeq += 1;
 
     this.roomService
@@ -148,7 +181,7 @@ export class GuestView {
         reload: this.input.isDown("KeyR"),
         mouseDown: this.input.mouseDown,
         facing,
-        desiredWeapon: this._selectedWeapon,
+        desiredWeapon: this.myPlayer.weaponKey,
         medkitSeq: this._medkitSeq,
       })
       .catch(() => {});
@@ -171,11 +204,28 @@ export class GuestView {
     return { ...snap, players, bots };
   }
 
-  _checkSpawned() {
-    if (this._spawnNotified) return;
-    if (this.snapshot?.players?.[this.myUid]) {
-      this._spawnNotified = true;
-      if (this.onSpawned) this.onSpawned();
+  // Health/inventory/ammo are host-decided (crates, damage), so they're synced
+  // in outright. Position is only *nudged* toward the host's copy — small drift
+  // eases out over a couple of snapshots, large drift (e.g. still catching up
+  // right after landing) snaps immediately instead of slowly rubber-banding.
+  _reconcileMyPlayer() {
+    const me = this.snapshot?.players?.[this.myUid];
+    if (!me || !this.myPlayer) return;
+
+    this.myPlayer.health = me.health;
+    this.myPlayer.alive = me.alive;
+    this.myPlayer.medkitCount = me.medkitCount;
+    this.myPlayer.ownedWeapons = new Set(me.ownedWeapons || ["fist"]);
+    this.myPlayer.mag = me.mag;
+    this.myPlayer.reserveAmmo = me.reserveAmmo;
+
+    const driftDist = dist(this.myPlayer.x, this.myPlayer.y, me.x, me.y);
+    if (driftDist > RECONCILE_SNAP_DISTANCE) {
+      this.myPlayer.x = me.x;
+      this.myPlayer.y = me.y;
+    } else if (driftDist > 4) {
+      this.myPlayer.x += (me.x - this.myPlayer.x) * 0.25;
+      this.myPlayer.y += (me.y - this.myPlayer.y) * 0.25;
     }
   }
 
@@ -196,51 +246,72 @@ export class GuestView {
     }
   }
 
-  _draw() {
+  // Eases a remote entity's rendered position toward `target` instead of
+  // snapping to it, so the gap between snapshots reads as a glide.
+  _easedPosition(key, targetX, targetY, dtSec) {
+    let r = this._remoteRender.get(key);
+    if (!r) {
+      r = { x: targetX, y: targetY };
+      this._remoteRender.set(key, r);
+    } else {
+      const factor = Math.min(1, REMOTE_SMOOTHING_PER_SEC * dtSec);
+      r.x += (targetX - r.x) * factor;
+      r.y += (targetY - r.y) * factor;
+    }
+    return r;
+  }
+
+  _visibleToMe(unit) {
+    if (!unit.hidden) return true;
+    return dist(this.myPlayer.x, this.myPlayer.y, unit.x, unit.y) <= HIDDEN_REVEAL_RANGE;
+  }
+
+  _draw(dtMs) {
     const ctx = this.ctx;
     const camera = this.camera;
     const snap = this.snapshot;
+    const dtSec = dtMs / 1000;
 
     ctx.fillStyle = "#12210f";
     ctx.fillRect(0, 0, camera.viewWidth, camera.viewHeight);
 
-    if (!snap || !this.mapData) return;
+    if (!this.myPlayer || !this.mapData) return;
 
-    const me = snap.players?.[this.myUid];
-    if (me && me.alive) camera.follow(me);
+    if (this.myPlayer.alive) camera.follow(this.myPlayer);
 
     ctx.save();
     ctx.scale(camera.zoom, camera.zoom);
     ctx.translate(-camera.x, -camera.y);
 
     GameMap.prototype.draw.call(this.mapData, ctx, camera);
-    drawLoot(ctx, camera, Object.values(snap.loot || {}));
-    SafeZone.prototype.draw.call(snap.safeZone || FULL_MAP_ZONE, ctx, camera);
+    drawLoot(ctx, camera, Object.values(snap?.loot || {}));
+    SafeZone.prototype.draw.call(snap?.safeZone || FULL_MAP_ZONE, ctx, camera);
 
-    for (const bot of Object.values(snap.bots || {})) {
-      if (bot.alive) drawUnit(ctx, bot, "#e05a5a", "#555");
+    for (const [id, bot] of Object.entries(snap?.bots || {})) {
+      if (!bot.alive || !this._visibleToMe(bot)) continue;
+      const eased = this._easedPosition(`bot:${id}`, bot.x, bot.y, dtSec);
+      drawUnit(ctx, { ...bot, x: eased.x, y: eased.y }, "#e05a5a", "#555");
     }
-    for (const [uid, p] of Object.entries(snap.players || {})) {
-      if (uid === this.myUid || !p.alive) continue;
-      drawUnit(ctx, p, "#b565d8", "#555");
+    for (const [uid, p] of Object.entries(snap?.players || {})) {
+      if (uid === this.myUid || !p.alive || !this._visibleToMe(p)) continue;
+      const eased = this._easedPosition(`player:${uid}`, p.x, p.y, dtSec);
+      drawUnit(ctx, { ...p, x: eased.x, y: eased.y }, "#b565d8", "#555");
     }
-    for (const bullet of snap.bullets || []) {
+    for (const bullet of snap?.bullets || []) {
       ctx.fillStyle = "#fff59d";
       ctx.beginPath();
       ctx.arc(bullet.x, bullet.y, BULLET_RADIUS, 0, Math.PI * 2);
       ctx.fill();
     }
-    if (me && me.alive) drawUnit(ctx, me, "#3f8efc", "#555");
+    if (this.myPlayer.alive) this.myPlayer.draw(ctx);
 
     ctx.restore();
 
-    if (me) {
-      const zone = snap.safeZone || FULL_MAP_ZONE;
-      this.hud.update(
-        { ...me, weapon: WEAPONS[me.weaponKey], ownedWeapons: new Set(me.ownedWeapons || ["fist"]) },
-        snap.aliveCount ?? 0,
-        { ...zone, timeUntilNextShrinkMs: () => zone.timeUntilNextShrinkMs ?? 0 }
-      );
-    }
+    const aliveCount = snap?.aliveCount ?? (this.myPlayer.alive ? 1 : 0);
+    const zone = snap?.safeZone || FULL_MAP_ZONE;
+    this.hud.update(this.myPlayer, aliveCount, {
+      ...zone,
+      timeUntilNextShrinkMs: () => zone.timeUntilNextShrinkMs ?? 0,
+    });
   }
 }

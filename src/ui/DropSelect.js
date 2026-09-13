@@ -63,9 +63,18 @@ export class DropSelect {
       ctx.fill();
     }
 
-    ctx.fillStyle = "#5c4a2f";
     for (const rect of this.map.obstacles) {
+      ctx.fillStyle = rect.kind === "container" ? "#8a4a2a" : "#5c4a2f";
       ctx.fillRect(rect.x * scaleX, rect.y * scaleY, Math.max(1, rect.w * scaleX), Math.max(1, rect.h * scaleY));
+    }
+
+    if (this.map.bushes) {
+      ctx.fillStyle = "#264a1c";
+      for (const bush of this.map.bushes) {
+        ctx.beginPath();
+        ctx.ellipse(bush.x * scaleX, bush.y * scaleY, bush.radius * scaleX, bush.radius * scaleY, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
 
     ctx.strokeStyle = "#7ec8ff";

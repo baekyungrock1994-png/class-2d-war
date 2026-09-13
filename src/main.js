@@ -14,7 +14,6 @@ const FULL_MAP_ZONE = {
 
 const canvas = document.getElementById("game-canvas");
 const startScreen = document.getElementById("start-screen");
-const guestWaitingScreen = document.getElementById("guest-waiting-screen");
 const endScreen = document.getElementById("end-screen");
 const endTitle = document.getElementById("end-title");
 const localDeathBanner = document.getElementById("local-death-banner");
@@ -43,7 +42,6 @@ let guestView = null; // active only while playing as a non-host client
 let matchMode = "solo"; // "solo" | "host" | "guest" — drives end-screen/back-to-menu behavior
 
 function hideTransientScreens() {
-  guestWaitingScreen.classList.add("hidden");
   localDeathBanner.classList.add("hidden");
   endScreen.classList.add("hidden");
 }
@@ -66,7 +64,6 @@ function showEndScreen(didWin) {
 
 function showHostLost() {
   localDeathBanner.classList.add("hidden");
-  guestWaitingScreen.classList.add("hidden");
   endTitle.textContent = "🔌 호스트와 연결이 끊겼습니다";
   restartBtn.classList.add("hidden");
   endMenuBtn.classList.remove("hidden");
@@ -167,9 +164,7 @@ function startGuestFlow() {
     dropSelect.onConfirm((x, y) => {
       dropSelect.close();
       roomService.requestDrop(x, y);
-      guestWaitingScreen.classList.remove("hidden");
-      guestView.onSpawned = () => guestWaitingScreen.classList.add("hidden");
-      guestView.start();
+      guestView.beginLocalDrop(x, y);
     });
     dropSelect.open(mapData, FULL_MAP_ZONE);
   });

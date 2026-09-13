@@ -79,13 +79,27 @@ export const ZONE_PHASES = [
 
 export const ZONE_DAMAGE_PER_SEC = 4;
 
-export const OBSTACLE_COUNT = 70;
+export const OBSTACLE_COUNT = 60;
 export const LOOT_COUNT = 60;
+
+export const BUSH_COUNT = 24;
+export const BUSH_RADIUS_RANGE = [55, 90];
+export const HIDDEN_REVEAL_RANGE = 70; // close enough to spot someone hiding in a bush anyway
+
+export const CONTAINER_YARD_COUNT = 2;
 
 // Online play (Firebase Realtime Database)
 export const ONLINE_TOTAL_SLOTS = 10; // real players + bots filling the rest
 export const ROOM_CODE_LENGTH = 5;
 export const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/1/I
-export const INPUT_SEND_MS = 60; // guest -> host
-export const SNAPSHOT_SEND_MS = 90; // host -> everyone
+export const INPUT_SEND_MS = 50; // guest -> host
+export const SNAPSHOT_SEND_MS = 70; // host -> everyone
 export const HOST_STALE_MS = 4000; // no snapshot for this long => host presumed gone
+
+// How fast a guest's rendered view of remote entities (bots, other players,
+// bullets) eases toward each new snapshot value, instead of jumping straight
+// to it — smooths out the gaps between snapshots into a steady glide.
+export const REMOTE_SMOOTHING_PER_SEC = 12;
+// If the host's reported position for the guest's own predicted player drifts
+// past this, snap immediately instead of easing (avoids a slow "rubber-band").
+export const RECONCILE_SNAP_DISTANCE = 140;

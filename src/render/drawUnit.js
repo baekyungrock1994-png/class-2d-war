@@ -13,6 +13,12 @@ export function drawUnit(ctx, unit, colorAlive, colorDead) {
 
   const weapon = WEAPONS[unit.weaponKey] ?? WEAPONS.fist;
 
+  // A hidden unit (standing in a bush) still renders for its own viewer — that's
+  // how a human notices they're tucked into cover — just faded, unlike other
+  // viewers who don't get drawn at all unless they're close enough to spot it.
+  const prevAlpha = ctx.globalAlpha;
+  if (unit.hidden) ctx.globalAlpha = prevAlpha * 0.45;
+
   ctx.save();
   ctx.translate(unit.x, unit.y);
   ctx.rotate(unit.facing);
@@ -50,6 +56,8 @@ export function drawUnit(ctx, unit, colorAlive, colorDead) {
     ctx.textAlign = "center";
     ctx.fillText(unit.name, unit.x, unit.y - unit.radius - 18);
   }
+
+  ctx.globalAlpha = prevAlpha;
 }
 
 // Two small fists in front of the body, standing in for the "no weapon" look.

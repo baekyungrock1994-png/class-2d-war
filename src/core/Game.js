@@ -1,4 +1,4 @@
-import { GameMap } from "../world/GameMap.js";
+import { GameMap, isHiddenInBushes } from "../world/GameMap.js";
 import { SafeZone } from "../world/SafeZone.js";
 import { generateLoot, drawLoot } from "../world/Loot.js";
 import { Player } from "../entities/Player.js";
@@ -17,6 +17,7 @@ import {
   WEAPONS,
   MEDKIT_HEAL_AMOUNT,
   SNAPSHOT_SEND_MS,
+  HIDDEN_REVEAL_RANGE,
 } from "../utils/constants.js";
 import { dist } from "../utils/math.js";
 
@@ -106,7 +107,7 @@ export class Game {
   }
 
   _serializeMap() {
-    return { obstacles: this.map.obstacles, terrainPatches: this.map.terrainPatches };
+    return { obstacles: this.map.obstacles, terrainPatches: this.map.terrainPatches, bushes: this.map.bushes };
   }
 
   // Spawns the player at the chosen drop point, parachuting in, and starts the loop.
@@ -149,6 +150,9 @@ export class Game {
     if (this.mode === "host") this._processGuestDropRequests();
 
     const units = this._allUnits();
+    for (const unit of units) {
+      unit.hidden = unit.alive && !unit.falling && isHiddenInBushes(unit.x, unit.y, this.map.bushes);
+    }
 
     this.safeZone.update(dtMs);
 
@@ -364,6 +368,7 @@ export class Game {
       weaponKey: unit.weaponKey,
       meleeSwingRemainingMs: Math.max(0, Math.round(unit.meleeSwingUntil - nowMs)),
       punchHand: unit.punchHand,
+      hidden: unit.hidden,
       name: unit.name,
     };
   }
@@ -392,12 +397,14 @@ export class Game {
       bots[`bot_${i}`] = this._serializeUnit(b, nowMs);
     });
 
+    // Collected crates never draw (see Loot.js), so there's no reason to keep
+    // paying bandwidth for them every broadcast — drop them from the payload.
     const loot = {};
     for (const item of this.loot) {
+      if (item.collected) continue;
       loot[item.id] = {
         x: round1(item.x),
         y: round1(item.y),
-        collected: item.collected,
         progress: Math.round(item.progress),
         openerId: item.openerId ?? null,
       };
@@ -426,6 +433,13 @@ export class Game {
     };
   }
 
+  // A unit hidden in a bush is invisible to everyone except its own controller
+  // — unless the local player happens to be standing close enough to spot them.
+  _visibleToLocalPlayer(unit) {
+    if (!unit.hidden) return true;
+    return dist(this.player.x, this.player.y, unit.x, unit.y) <= HIDDEN_REVEAL_RANGE;
+  }
+
   _draw() {
     const ctx = this.ctx;
     const camera = this.camera;
@@ -442,10 +456,10 @@ export class Game {
     this.safeZone.draw(ctx, camera);
 
     for (const bot of this.bots) {
-      if (bot.alive) bot.draw(ctx);
+      if (bot.alive && this._visibleToLocalPlayer(bot)) bot.draw(ctx);
     }
     for (const rp of this.remotePlayers.values()) {
-      if (rp.alive) rp.drawBody(ctx, "#b565d8", "#555");
+      if (rp.alive && this._visibleToLocalPlayer(rp)) rp.drawBody(ctx, "#b565d8", "#555");
     }
     for (const bullet of this.bullets) bullet.draw(ctx);
 

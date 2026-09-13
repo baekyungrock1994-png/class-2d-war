@@ -1,6 +1,6 @@
 import { Unit } from "./Unit.js";
 import { Bullet } from "./Bullet.js";
-import { PLAYER_SPEED, MEDKIT_HEAL_AMOUNT } from "../utils/constants.js";
+import { PLAYER_SPEED, MEDKIT_HEAL_AMOUNT, HIDDEN_REVEAL_RANGE } from "../utils/constants.js";
 import { angleTo, dist, randRange } from "../utils/math.js";
 
 const SIGHT_RANGE = 480;
@@ -53,6 +53,7 @@ export class Bot extends Unit {
     for (const u of units) {
       if (u === this || !u.alive || u.falling) continue;
       const d = dist(this.x, this.y, u.x, u.y);
+      if (u.hidden && d > HIDDEN_REVEAL_RANGE) continue; // can't spot someone hiding in a bush from afar
       if (d < SIGHT_RANGE && d < bestDist) {
         bestDist = d;
         target = u;

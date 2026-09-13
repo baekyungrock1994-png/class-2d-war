@@ -34,6 +34,10 @@ export class Unit {
     this.fallElapsed = 0;
     this.fallDurationMs = FALL_DURATION_MS;
 
+    // Recomputed every tick from bush cover (see Game.js) — hides this unit's
+    // body/name from other viewers' rendering unless they're standing close.
+    this.hidden = false;
+
     this.name = isPlayer ? "나" : `봇-${nextId}`;
   }
 
