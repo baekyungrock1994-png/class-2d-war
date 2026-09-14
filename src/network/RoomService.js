@@ -101,6 +101,19 @@ export class RoomService {
     onDisconnect(ref(db, `rooms/${code}/input/${uid}`)).remove();
   }
 
+  // Host only: removes a guest from the lobby. Not a ban — they can rejoin
+  // with the same room code afterward. Relies on the $roomId-level rule
+  // granting the host write access anywhere under the room, same as
+  // startMatch()/sendSnapshot(); the target's own uid rule doesn't need to
+  // allow this since the host's write is authorized at the ancestor level.
+  async kickPlayer(uid) {
+    if (!this.isHost || !this.roomId || !uid) return;
+    await Promise.all([
+      remove(ref(db, `rooms/${this.roomId}/lobby/${uid}`)).catch(() => {}),
+      remove(ref(db, `rooms/${this.roomId}/input/${uid}`)).catch(() => {}),
+    ]);
+  }
+
   async leaveRoom() {
     if (!this.roomId) return;
     const uid = getUid();

@@ -62,9 +62,11 @@ function showEndScreen(didWin) {
   endScreen.classList.remove("hidden");
 }
 
-function showHostLost() {
+// A simple "here's what happened, back to the menu" screen — reused for host
+// disconnects and for the host kicking this player out of the lobby.
+function showInfoScreen(title) {
   localDeathBanner.classList.add("hidden");
-  endTitle.textContent = "🔌 호스트와 연결이 끊겼습니다";
+  endTitle.textContent = title;
   restartBtn.classList.add("hidden");
   endMenuBtn.classList.remove("hidden");
   endScreen.classList.remove("hidden");
@@ -153,7 +155,7 @@ function startGuestFlow() {
   guestView = new GuestView(canvas, roomService, myUid);
   guestView.onGameOver = (didWin) => showEndScreen(didWin);
   guestView.onLocalDeath = () => localDeathBanner.classList.remove("hidden");
-  guestView.onHostLost = () => showHostLost();
+  guestView.onHostLost = () => showInfoScreen("🔌 호스트와 연결이 끊겼습니다");
 
   let mapReceived = false;
   roomService.onMap((mapData) => {
@@ -183,6 +185,7 @@ onlineBtn.addEventListener("click", () => {
 
 lobby.onLeave = () => showStart();
 lobby.onStartMatch = (botCount) => startHostedMatch(botCount);
+lobby.onKicked = () => showInfoScreen("🚫 호스트가 강퇴했습니다");
 lobby.onMatchStarted = (isHost) => {
   hideTransientScreens();
   if (!isHost) startGuestFlow();

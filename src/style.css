@@ -299,16 +299,53 @@ html, body {
   border-radius: 4px;
   padding: 8px 16px;
   font-size: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-#lobby-player-list li.is-host::after {
+#lobby-player-list li.is-host .player-name::after {
   content: " (호스트)";
   color: #f5c518;
   font-size: 12px;
+}
+
+.kick-btn {
+  background: rgba(217, 52, 43, 0.25) !important;
+  color: #ff8f87 !important;
+  border: 1px solid rgba(217, 52, 43, 0.6) !important;
+  border-radius: 4px;
+  font-size: 12px !important;
+  font-weight: normal !important;
+  padding: 4px 10px !important;
+  cursor: pointer;
+}
+
+.kick-btn:hover {
+  background: rgba(217, 52, 43, 0.45) !important;
 }
 
 #lobby-status-text {
   font-size: 14px;
   color: #bbb;
   margin: 0;
+}
+
+#bot-count-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: #ccc;
+}
+
+#bot-count-input {
+  width: 70px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid #555;
+  background: #1a1a1a;
+  color: #fff;
+  text-align: center;
 }
