@@ -1,4 +1,4 @@
-import { WORLD_WIDTH, WEAPON_SLOTS, MEDKIT_SLOT } from "../utils/constants.js";
+import { WORLD_WIDTH, WEAPON_SLOTS, MEDKIT_SLOT, GRENADE_SLOT } from "../utils/constants.js";
 
 export class HUD {
   constructor() {
@@ -11,8 +11,10 @@ export class HUD {
     this.minimap = document.getElementById("minimap");
     this.minimapCtx = this.minimap.getContext("2d");
     this.medkitCountEl = document.getElementById("medkit-count");
+    this.grenadeCountEl = document.getElementById("grenade-count");
     this.weaponSlotEls = WEAPON_SLOTS.map((s) => document.querySelector(`.inv-slot[data-slot="${s.slot}"]`));
     this.medkitSlotEl = document.querySelector(`.inv-slot[data-slot="${MEDKIT_SLOT.slot}"]`);
+    this.grenadeSlotEl = document.querySelector(`.inv-slot[data-slot="${GRENADE_SLOT.slot}"]`);
   }
 
   show() {
@@ -57,6 +59,13 @@ export class HUD {
     }
     if (this.medkitCountEl) {
       this.medkitCountEl.textContent = player.medkitCount;
+    }
+
+    if (this.grenadeSlotEl) {
+      this.grenadeSlotEl.classList.toggle("owned", player.grenadeCount > 0);
+    }
+    if (this.grenadeCountEl) {
+      this.grenadeCountEl.textContent = player.grenadeCount;
     }
   }
 

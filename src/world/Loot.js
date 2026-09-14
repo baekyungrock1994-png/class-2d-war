@@ -7,6 +7,7 @@ const LOOT_TYPES = [
   { type: "weapon", weapon: "shotgun", weight: 2 },
   { type: "ammo", weight: 4 },
   { type: "medkit", weight: 3 },
+  { type: "grenade", weight: 2 },
 ];
 
 function pickWeighted() {

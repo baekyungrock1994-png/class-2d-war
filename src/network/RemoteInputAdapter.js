@@ -5,9 +5,7 @@
 export class RemoteInputAdapter {
   constructor() {
     this.keys = new Set();
-    this.mouseX = 0;
-    this.mouseY = 0;
-    this.mouseDown = false;
+    this.firing = false;
     this.remoteFacing = 0;
     this._justPressed = new Set();
   }
@@ -29,7 +27,7 @@ export class RemoteInputAdapter {
     if (payload.right) this.keys.add("KeyD");
     if (payload.reload) this.keys.add("KeyR");
 
-    this.mouseDown = !!payload.mouseDown;
+    this.firing = !!payload.firing;
     if (typeof payload.facing === "number") this.remoteFacing = payload.facing;
   }
 }

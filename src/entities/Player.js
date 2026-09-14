@@ -1,7 +1,16 @@
 import { Unit } from "./Unit.js";
 import { Bullet } from "./Bullet.js";
 import { findMeleeTarget } from "./melee.js";
-import { PLAYER_SPEED, WORLD_WIDTH, WORLD_HEIGHT, WEAPON_SLOTS, MEDKIT_SLOT, MEDKIT_HEAL_AMOUNT } from "../utils/constants.js";
+import { findNearestTarget } from "./targeting.js";
+import {
+  PLAYER_SPEED,
+  WORLD_WIDTH,
+  WORLD_HEIGHT,
+  WEAPON_SLOTS,
+  MEDKIT_SLOT,
+  MEDKIT_HEAL_AMOUNT,
+  AUTO_AIM_RANGE,
+} from "../utils/constants.js";
 import { angleTo, randRange, clamp } from "../utils/math.js";
 
 export class Player extends Unit {
@@ -9,7 +18,7 @@ export class Player extends Unit {
     super(x, y, true);
   }
 
-  update(dtMs, input, camera, obstacles) {
+  update(dtMs, input, obstacles, units = []) {
     if (!this.alive) return;
 
     const dtSec = dtMs / 1000;
@@ -35,12 +44,18 @@ export class Player extends Unit {
 
     if (typeof input.remoteFacing === "number") {
       // Driven by RemoteInputAdapter (host simulating a guest) — the guest
-      // already computed this angle against its own camera/mouse and sent the
-      // result directly, since it doesn't share the host's camera transform.
+      // already ran its own auto-aim locally and reported the result, since
+      // it doesn't share the host's live unit list.
       this.facing = input.remoteFacing;
     } else {
-      const worldMouse = camera.screenToWorld(input.mouseX, input.mouseY);
-      this.facing = angleTo(this.x, this.y, worldMouse.x, worldMouse.y);
+      const target = findNearestTarget(this, units, AUTO_AIM_RANGE);
+      if (target) {
+        this.facing = angleTo(this.x, this.y, target.x, target.y);
+      } else if (dx !== 0 || dy !== 0) {
+        // No one in range — face the way we're walking instead of freezing
+        // on whatever direction we last shot.
+        this.facing = Math.atan2(dy, dx);
+      }
     }
 
     if (this.falling) {

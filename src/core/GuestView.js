@@ -5,9 +5,13 @@ import { GameMap, isHiddenInBushes } from "../world/GameMap.js";
 import { SafeZone } from "../world/SafeZone.js";
 import { drawLoot } from "../world/Loot.js";
 import { drawUnit } from "../render/drawUnit.js";
+import { drawDeathEffects } from "../render/drawDeathEffect.js";
+import { drawGrenades } from "../render/drawGrenades.js";
 import { Player } from "../entities/Player.js";
 import {
   MEDKIT_SLOT,
+  GRENADE_SLOT,
+  FIRE_KEY_CODE,
   INPUT_SEND_MS,
   WORLD_WIDTH,
   WORLD_HEIGHT,
@@ -16,8 +20,9 @@ import {
   HIDDEN_REVEAL_RANGE,
   REMOTE_SMOOTHING_PER_SEC,
   RECONCILE_SNAP_DISTANCE,
+  SPECTATOR_SPEED,
 } from "../utils/constants.js";
-import { angleTo, dist } from "../utils/math.js";
+import { dist, clamp } from "../utils/math.js";
 
 const FULL_MAP_ZONE = {
   centerX: WORLD_WIDTH / 2,
@@ -50,6 +55,7 @@ export class GuestView {
 
     this.mapData = null;
     this.myPlayer = null;
+    this.spectator = null; // {x, y} free-look camera target once this player dies
     this.snapshot = null;
     this._remoteRender = new Map(); // uid/botId -> eased {x, y} for smooth rendering
 
@@ -58,6 +64,7 @@ export class GuestView {
     this._lastTs = 0;
     this._lastSendAt = 0;
     this._medkitSeq = 0;
+    this._grenadeSeq = 0;
     this._matchOverNotified = false;
     this._localDeathNotified = false;
     this._hostLostNotified = false;
@@ -158,9 +165,13 @@ export class GuestView {
   // swings are triggered locally too (instant animation feedback), but with no
   // target list, so no local damage is ever applied — hits stay host-authoritative.
   _updateMyPlayer(dtMs) {
-    if (!this.myPlayer || !this.myPlayer.alive) return;
-    this.myPlayer.update(dtMs, this.input, this.camera, this.mapData?.obstacles ?? []);
-    if (this.input.mouseDown) this.myPlayer.tryShoot(performance.now(), []);
+    if (!this.myPlayer) return;
+    if (!this.myPlayer.alive) {
+      this._updateSpectatorCamera(dtMs);
+      return;
+    }
+    this.myPlayer.update(dtMs, this.input, this.mapData?.obstacles ?? [], this._autoAimUnits());
+    if (this.input.isDown(FIRE_KEY_CODE)) this.myPlayer.tryShoot(performance.now(), []);
 
     // Computed locally (not synced from the snapshot) so the fade-when-hidden
     // feedback is instant, same as the host sees for its own player.
@@ -168,16 +179,47 @@ export class GuestView {
       !this.myPlayer.falling && isHiddenInBushes(this.myPlayer.x, this.myPlayer.y, this.mapData?.bushes ?? []);
   }
 
+  // Auto-aim needs a "who's nearby" list, same shape the host's own auto-aim
+  // uses (x/y/alive/falling/hidden) — the latest snapshot's plain bot/player
+  // objects already duck-type as that, so no real Unit instances are needed.
+  _autoAimUnits() {
+    if (!this.snapshot) return [];
+    const units = [];
+    for (const bot of Object.values(this.snapshot.bots || {})) units.push(bot);
+    for (const [uid, p] of Object.entries(this.snapshot.players || {})) {
+      if (uid !== this.myUid) units.push(p);
+    }
+    return units;
+  }
+
+  // Free-look camera pan once dead, so this player can watch the rest of the
+  // match instead of staring at the spot they died. Reuses WASD, which
+  // Player.update() no longer consumes once the player isn't alive.
+  _updateSpectatorCamera(dtMs) {
+    if (!this.spectator) return;
+    let dx = 0, dy = 0;
+    if (this.input.isDown("KeyW") || this.input.isDown("ArrowUp")) dy -= 1;
+    if (this.input.isDown("KeyS") || this.input.isDown("ArrowDown")) dy += 1;
+    if (this.input.isDown("KeyA") || this.input.isDown("ArrowLeft")) dx -= 1;
+    if (this.input.isDown("KeyD") || this.input.isDown("ArrowRight")) dx += 1;
+    if (dx === 0 && dy === 0) return;
+
+    const len = Math.hypot(dx, dy);
+    const dtSec = dtMs / 1000;
+    this.spectator.x = clamp(this.spectator.x + (dx / len) * SPECTATOR_SPEED * dtSec, 0, WORLD_WIDTH);
+    this.spectator.y = clamp(this.spectator.y + (dy / len) * SPECTATOR_SPEED * dtSec, 0, WORLD_HEIGHT);
+  }
+
   _sendInputThrottled() {
     const now = performance.now();
     if (now - this._lastSendAt < INPUT_SEND_MS) return;
     this._lastSendAt = now;
-    if (!this.myPlayer) return;
+    if (!this.myPlayer || !this.myPlayer.alive) return;
 
-    const worldMouse = this.camera.screenToWorld(this.input.mouseX, this.input.mouseY);
-    const facing = angleTo(this.myPlayer.x, this.myPlayer.y, worldMouse.x, worldMouse.y);
-
+    // _updateMyPlayer() already ran this frame and set this.myPlayer.facing via
+    // local auto-aim — just report that, rather than recomputing it here.
     if (this.input.wasJustPressed(MEDKIT_SLOT.code)) this._medkitSeq += 1;
+    if (this.input.wasJustPressed(GRENADE_SLOT.code)) this._grenadeSeq += 1;
 
     this.roomService
       .sendInput({
@@ -186,10 +228,11 @@ export class GuestView {
         left: this.input.isDown("KeyA") || this.input.isDown("ArrowLeft"),
         right: this.input.isDown("KeyD") || this.input.isDown("ArrowRight"),
         reload: this.input.isDown("KeyR"),
-        mouseDown: this.input.mouseDown,
-        facing,
+        firing: this.input.isDown(FIRE_KEY_CODE),
+        facing: this.myPlayer.facing,
         desiredWeapon: this.myPlayer.weaponKey,
         medkitSeq: this._medkitSeq,
+        grenadeSeq: this._grenadeSeq,
       })
       .catch(() => {});
   }
@@ -207,8 +250,23 @@ export class GuestView {
     for (const [uid, p] of Object.entries(snap.players || {})) players[uid] = hydrateUnit(p);
     const bots = {};
     for (const [id, b] of Object.entries(snap.bots || {})) bots[id] = hydrateUnit(b);
+    const deathEffects = (snap.deathEffects || []).map((e) => ({
+      x: e.x,
+      y: e.y,
+      expiresAt: recvNow + (e.remainingMs || 0),
+      durationMs: e.durationMs,
+      maxRadius: e.maxRadius,
+      debrisCount: e.debrisCount,
+    }));
+    const grenades = (snap.grenades || []).map((g) => ({
+      x: g.x,
+      y: g.y,
+      targetX: g.targetX,
+      targetY: g.targetY,
+      explodeAt: recvNow + (g.remainingMs || 0),
+    }));
 
-    return { ...snap, players, bots };
+    return { ...snap, players, bots, deathEffects, grenades };
   }
 
   // Health/inventory/ammo are host-decided (crates, damage), so they're synced
@@ -222,6 +280,7 @@ export class GuestView {
     this.myPlayer.health = me.health;
     this.myPlayer.alive = me.alive;
     this.myPlayer.medkitCount = me.medkitCount;
+    this.myPlayer.grenadeCount = me.grenadeCount;
     this.myPlayer.ownedWeapons = new Set(me.ownedWeapons || ["fist"]);
     this.myPlayer.mag = me.mag;
     this.myPlayer.reserveAmmo = me.reserveAmmo;
@@ -251,6 +310,7 @@ export class GuestView {
     const me = this.snapshot?.players?.[this.myUid];
     if (me && !me.alive) {
       this._localDeathNotified = true;
+      this.spectator = { x: this.myPlayer.x, y: this.myPlayer.y };
       if (this.onLocalDeath) this.onLocalDeath();
     }
   }
@@ -280,7 +340,9 @@ export class GuestView {
 
   _visibleToMe(unit) {
     if (!unit.hidden) return true;
-    return dist(this.myPlayer.x, this.myPlayer.y, unit.x, unit.y) <= HIDDEN_REVEAL_RANGE;
+    const viewer = this.myPlayer.alive ? this.myPlayer : this.spectator;
+    if (!viewer) return false;
+    return dist(viewer.x, viewer.y, unit.x, unit.y) <= HIDDEN_REVEAL_RANGE;
   }
 
   _draw(dtMs) {
@@ -294,7 +356,11 @@ export class GuestView {
 
     if (!this.myPlayer || !this.mapData) return;
 
-    if (this.myPlayer.alive) camera.follow(this.myPlayer);
+    if (this.myPlayer.alive) {
+      camera.follow(this.myPlayer);
+    } else if (this.spectator) {
+      camera.follow(this.spectator);
+    }
 
     ctx.save();
     ctx.scale(camera.zoom, camera.zoom);
@@ -321,6 +387,9 @@ export class GuestView {
       ctx.fill();
     }
     if (this.myPlayer.alive) this.myPlayer.draw(ctx);
+
+    drawGrenades(ctx, snap?.grenades || [], performance.now());
+    drawDeathEffects(ctx, snap?.deathEffects || [], performance.now());
 
     ctx.restore();
 

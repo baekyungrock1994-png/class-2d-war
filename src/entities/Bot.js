@@ -1,12 +1,14 @@
 import { Unit } from "./Unit.js";
 import { Bullet } from "./Bullet.js";
-import { PLAYER_SPEED, MEDKIT_HEAL_AMOUNT, HIDDEN_REVEAL_RANGE } from "../utils/constants.js";
+import { PLAYER_SPEED, MEDKIT_HEAL_AMOUNT, HIDDEN_REVEAL_RANGE, GRENADE_THROW_DISTANCE } from "../utils/constants.js";
 import { angleTo, dist, randRange } from "../utils/math.js";
 
 const SIGHT_RANGE = 480;
 const PREFERRED_RANGE = 260;
 const WANDER_INTERVAL_MS = 3500;
 const LOW_HEALTH_RATIO = 0.5;
+const GRENADE_MIN_RANGE = 90; // don't lob one at point-blank range — melee/gunfire instead
+const GRENADE_THROW_CHANCE = 0.15; // per reaction tick, when a throw is otherwise viable
 
 export class Bot extends Unit {
   constructor(x, y, name) {
@@ -39,10 +41,11 @@ export class Bot extends Unit {
   }
 
   update(dtMs, ctx) {
-    if (!this.alive) return [];
+    if (!this.alive) return { bullets: [], grenades: [] };
     const { map, safeZone, units, obstacles, nowMs } = ctx;
     const dtSec = dtMs / 1000;
     const bulletsOut = [];
+    const grenadesOut = [];
 
     if (this.medkitCount > 0 && this.health < this.maxHealth * LOW_HEALTH_RATIO) {
       this.useMedkit(MEDKIT_HEAL_AMOUNT);
@@ -83,6 +86,17 @@ export class Bot extends Unit {
       this.reactionCooldown -= dtMs;
       if (this.reactionCooldown <= 0) {
         this.reactionCooldown = randRange(150, 400);
+
+        if (
+          bestDist > GRENADE_MIN_RANGE &&
+          bestDist < GRENADE_THROW_DISTANCE + 40 &&
+          this.canThrowGrenade(nowMs) &&
+          Math.random() < GRENADE_THROW_CHANCE
+        ) {
+          const grenade = this.tryThrowGrenade(nowMs);
+          if (grenade) grenadesOut.push(grenade);
+        }
+
         const canAttack = weapon.melee ? bestDist <= weapon.range : true;
 
         if (canAttack && this.canShoot(nowMs) && Math.random() < 0.85) {
@@ -122,7 +136,7 @@ export class Bot extends Unit {
       this.applyMovement((moveX / len) * speed, (moveY / len) * speed, dtSec, obstacles);
     }
 
-    return bulletsOut;
+    return { bullets: bulletsOut, grenades: grenadesOut };
   }
 
   draw(ctx) {

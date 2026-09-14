@@ -1,6 +1,18 @@
-import { PLAYER_RADIUS, PLAYER_MAX_HEALTH, WEAPONS, WORLD_WIDTH, WORLD_HEIGHT, FALL_DURATION_MS, MELEE_SWING_MS } from "../utils/constants.js";
+import {
+  PLAYER_RADIUS,
+  PLAYER_MAX_HEALTH,
+  WEAPONS,
+  WORLD_WIDTH,
+  WORLD_HEIGHT,
+  FALL_DURATION_MS,
+  MELEE_SWING_MS,
+  STARTING_GRENADE_COUNT,
+  GRENADE_THROW_COOLDOWN_MS,
+  GRENADE_THROW_DISTANCE,
+} from "../utils/constants.js";
 import { clamp, circleRectPush } from "../utils/math.js";
 import { drawUnit } from "../render/drawUnit.js";
+import { Grenade } from "./Grenade.js";
 
 let nextId = 1;
 
@@ -29,6 +41,8 @@ export class Unit {
     this.ownedWeapons = new Set(["fist"]);
     this.weaponAmmo = {}; // weaponKey -> { mag, reserve }, preserved across switches
     this.medkitCount = 0;
+    this.grenadeCount = STARTING_GRENADE_COUNT;
+    this.lastGrenadeThrowAt = -Infinity;
 
     this.falling = false;
     this.fallElapsed = 0;
@@ -136,6 +150,28 @@ export class Unit {
         this.weaponAmmo[key].reserve += amount;
       }
     }
+  }
+
+  canThrowGrenade(nowMs) {
+    return (
+      this.alive &&
+      !this.falling &&
+      this.grenadeCount > 0 &&
+      nowMs - this.lastGrenadeThrowAt >= GRENADE_THROW_COOLDOWN_MS
+    );
+  }
+
+  // Always thrown GRENADE_THROW_DISTANCE in whatever direction the unit is
+  // currently facing — no charging up or aiming a variable distance, to keep
+  // the control simple (one key, one committed throw).
+  tryThrowGrenade(nowMs) {
+    if (!this.canThrowGrenade(nowMs)) return null;
+    this.lastGrenadeThrowAt = nowMs;
+    this.grenadeCount -= 1;
+
+    const targetX = clamp(this.x + Math.cos(this.facing) * GRENADE_THROW_DISTANCE, 0, WORLD_WIDTH);
+    const targetY = clamp(this.y + Math.sin(this.facing) * GRENADE_THROW_DISTANCE, 0, WORLD_HEIGHT);
+    return new Grenade(this.x, this.y, targetX, targetY, this.id, nowMs);
   }
 
   useMedkit(healAmount) {
