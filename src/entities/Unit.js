@@ -112,7 +112,15 @@ export class Unit {
       this.mag = 0;
       this.reserveAmmo = 0;
     } else {
-      const store = this.weaponAmmo[weaponKey];
+      // A guest's locally-predicted player has this weapon in `ownedWeapons`
+      // (synced from the host's snapshot) but never actually ran acquireWeapon()
+      // itself, so weaponAmmo[weaponKey] can be missing — fall back to a fresh
+      // magazine rather than crashing.
+      const store = this.weaponAmmo[weaponKey] ?? {
+        mag: WEAPONS[weaponKey].magSize,
+        reserve: WEAPONS[weaponKey].reserveAmmo,
+      };
+      this.weaponAmmo[weaponKey] = store;
       this.mag = store.mag;
       this.reserveAmmo = store.reserve;
     }

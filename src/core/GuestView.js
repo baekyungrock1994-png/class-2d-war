@@ -129,9 +129,16 @@ export class GuestView {
     this._checkHostAlive();
     if (!this.running) return; // _checkHostAlive may have stopped us
 
-    this._updateMyPlayer(dtMs);
-    this._sendInputThrottled();
-    this._draw(dtMs);
+    // An uncaught error here previously killed this tab's rAF chain outright —
+    // the whole match would silently freeze for this one player while the host
+    // (and everyone else) kept going. Log and skip the frame instead of dying.
+    try {
+      this._updateMyPlayer(dtMs);
+      this._sendInputThrottled();
+      this._draw(dtMs);
+    } catch (err) {
+      console.error("게임 루프 오류 (한 프레임 건너뜀):", err);
+    }
     this.input.endFrame();
 
     this._rafId = requestAnimationFrame((t) => this._loop(t));
@@ -218,6 +225,16 @@ export class GuestView {
     this.myPlayer.ownedWeapons = new Set(me.ownedWeapons || ["fist"]);
     this.myPlayer.mag = me.mag;
     this.myPlayer.reserveAmmo = me.reserveAmmo;
+
+    // The host is the only one that ever runs acquireWeapon() for this player
+    // (crates are host-authoritative), so weaponAmmo — a purely local cache
+    // equipWeapon() reads from — would otherwise stay empty for any weapon
+    // picked up remotely. Keep at least the host's currently-equipped weapon
+    // backed by real numbers; equipWeapon() itself now also tolerates a still-
+    // missing entry for any other owned weapon by starting it at a full mag.
+    if (me.weaponKey && me.weaponKey !== "fist") {
+      this.myPlayer.weaponAmmo[me.weaponKey] = { mag: me.mag, reserve: me.reserveAmmo };
+    }
 
     const driftDist = dist(this.myPlayer.x, this.myPlayer.y, me.x, me.y);
     if (driftDist > RECONCILE_SNAP_DISTANCE) {

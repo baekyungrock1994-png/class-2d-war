@@ -133,8 +133,15 @@ export class Game {
     const dtMs = Math.min(50, ts - this._lastTs);
     this._lastTs = ts;
 
-    this._update(dtMs);
-    this._draw();
+    // An uncaught error here would otherwise kill the rAF chain outright —
+    // for the host that means the whole match (bots, every connected guest)
+    // silently freezes. Log and skip the frame instead of dying.
+    try {
+      this._update(dtMs);
+      this._draw();
+    } catch (err) {
+      console.error("게임 루프 오류 (한 프레임 건너뜀):", err);
+    }
     this.input.endFrame();
 
     this._rafId = requestAnimationFrame((t) => this._loop(t));
