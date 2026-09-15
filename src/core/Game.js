@@ -116,6 +116,12 @@ export class Game {
     this._localDeathNotified = false;
     this._lastSnapshotSentAt = 0;
     this._winnerUid = null;
+    // Guards the "last one standing" check below from firing before the match
+    // has actually got more than one participant — with 0 bots, a guest's
+    // drop request takes a network round-trip to turn into a remotePlayers
+    // entry, so for a moment right after beginDrop() the host is the *only*
+    // unit that exists, which would otherwise read as an instant win.
+    this._maxRosterSeen = 0;
 
     if (this.mode === "host") {
       this.hostUid = getUid();
@@ -280,7 +286,9 @@ export class Game {
       if (this.onLocalDeath) this.onLocalDeath();
     }
 
-    if (!this._matchEnded) {
+    this._maxRosterSeen = Math.max(this._maxRosterSeen, units.length);
+
+    if (!this._matchEnded && this._maxRosterSeen > 1) {
       const aliveUnits = this._allUnits().filter((u) => u.alive);
       if (aliveUnits.length <= 1) {
         this._matchEnded = true;
