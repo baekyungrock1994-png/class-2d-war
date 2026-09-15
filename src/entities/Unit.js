@@ -53,6 +53,15 @@ export class Unit {
     this.hidden = false;
 
     this.name = isPlayer ? "나" : `봇-${nextId}`;
+
+    // Match-results tracking. lastDamagedBy is whoever's hit most recently
+    // landed (cleared to null by environmental damage like the safe zone),
+    // so Game.js can credit a kill when it's the reason this unit died.
+    // placement is set once, the moment this unit dies (or, for the sole
+    // survivor, when the match ends) — see Game.js's _onUnitDeath/_endMatch.
+    this.kills = 0;
+    this.lastDamagedBy = null;
+    this.placement = null;
   }
 
   get weapon() {
@@ -190,9 +199,13 @@ export class Unit {
     this.health = Math.min(this.maxHealth, this.health + amount);
   }
 
-  takeDamage(amount) {
+  // sourceId identifies whoever dealt this hit (a bullet's owner, a melee
+  // attacker, a grenade's thrower) so a kill can be credited if it's fatal;
+  // pass nothing for environmental damage (the safe zone) so it isn't.
+  takeDamage(amount, sourceId = null) {
     if (!this.alive) return;
     this.health -= amount;
+    this.lastDamagedBy = sourceId;
     if (this.health <= 0) {
       this.health = 0;
       this.alive = false;

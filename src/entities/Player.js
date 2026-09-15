@@ -90,7 +90,7 @@ export class Player extends Unit {
     if (weapon.melee) {
       this.triggerMeleeSwing(nowMs);
       const target = findMeleeTarget(this, units, weapon.range);
-      if (target) target.takeDamage(weapon.damage);
+      if (target) target.takeDamage(weapon.damage, this.id);
       return [];
     }
 
@@ -98,7 +98,7 @@ export class Player extends Unit {
     const pelletCount = weapon.pellets ?? 1;
     for (let i = 0; i < pelletCount; i++) {
       const spread = randRange(-weapon.spread, weapon.spread);
-      bullets.push(new Bullet(this.x, this.y, this.facing + spread, weapon.bulletSpeed, weapon.damage, this.id));
+      bullets.push(new Bullet(this.x, this.y, this.facing + spread, weapon.bulletSpeed, weapon.damage, this.id, weapon.range));
     }
     return bullets;
   }

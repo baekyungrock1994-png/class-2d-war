@@ -28,7 +28,7 @@ export class RoomService {
   constructor() {
     this.roomId = null;
     this.isHost = false;
-    this._listeners = []; // [{ path, callback }] for cleanup
+    this._listeners = new Map(); // path -> { ref, callback } for cleanup, keyed so re-subscribing (e.g. a restarted match) replaces rather than stacks
   }
 
   async _uid() {
@@ -114,6 +114,17 @@ export class RoomService {
     ]);
   }
 
+  // Host only: wipes every connected guest's input entry — in particular
+  // `dropRequest`, which otherwise would still be sitting there from the
+  // round that just ended and would be replayed as a fresh drop request the
+  // instant a restarted match starts processing input again, before the
+  // guest has picked a new landing spot. Same ancestor-level write rule as
+  // kickPlayer().
+  async clearAllInput() {
+    if (!this.isHost || !this.roomId) return;
+    await remove(ref(db, `rooms/${this.roomId}/input`)).catch(() => {});
+  }
+
   async leaveRoom() {
     if (!this.roomId) return;
     const uid = getUid();
@@ -126,12 +137,15 @@ export class RoomService {
     this.isHost = false;
   }
 
-  // Host only: publishes the generated map once so guests can preview it while
-  // picking a drop point, then flips the room into "playing".
+  // Host only: publishes the generated map so guests can preview it while
+  // picking a drop point, then flips the room into "playing". `round` is a
+  // fresh marker every call (including a same-room restart after a match
+  // ends) — guests watch it via onMatch() to know a new round has begun,
+  // since "status" alone would stay "playing" -> "playing" and not re-fire.
   async startMatch(mapPayload) {
     if (!this.isHost || !this.roomId) return;
     await update(ref(db, `rooms/${this.roomId}`), {
-      map: mapPayload,
+      match: { map: mapPayload, round: Date.now() },
       status: "playing",
       startedAt: serverTimestamp(),
     });
@@ -150,8 +164,10 @@ export class RoomService {
     this._subscribe(`rooms/${this.roomId}/status`, (val) => callback(val || "lobby"));
   }
 
-  onMap(callback) {
-    this._subscribe(`rooms/${this.roomId}/map`, (val) => {
+  // Fires once for the first match and again every time the host restarts
+  // the room (see startMatch's `round` marker) — callback gets { map, round }.
+  onMatch(callback) {
+    this._subscribe(`rooms/${this.roomId}/match`, (val) => {
       if (val) callback(val);
     });
   }
@@ -189,15 +205,21 @@ export class RoomService {
     await update(ref(db, `rooms/${this.roomId}/input/${uid}`), { dropRequest: { x, y } });
   }
 
+  // Keyed by path so subscribing twice to the same path (e.g. Game.prepareMatch()
+  // re-running onAllInput()/onLobby() on a host restart) replaces the old
+  // listener instead of stacking a duplicate one alongside it.
   _subscribe(path, callback) {
+    const prev = this._listeners.get(path);
+    if (prev) off(prev.ref, "value", prev.callback);
+
     const r = ref(db, path);
     const wrapped = (snap) => callback(snap.val());
     onValue(r, wrapped);
-    this._listeners.push({ ref: r, callback: wrapped });
+    this._listeners.set(path, { ref: r, callback: wrapped });
   }
 
   _offAll() {
-    for (const { ref: r, callback } of this._listeners) off(r, "value", callback);
-    this._listeners = [];
+    for (const { ref: r, callback } of this._listeners.values()) off(r, "value", callback);
+    this._listeners.clear();
   }
 }

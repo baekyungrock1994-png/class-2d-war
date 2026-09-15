@@ -103,12 +103,12 @@ export class Bot extends Unit {
           this.consumeShot(nowMs);
           if (weapon.melee) {
             this.triggerMeleeSwing(nowMs);
-            target.takeDamage(weapon.damage);
+            target.takeDamage(weapon.damage, this.id);
           } else {
             const pelletCount = weapon.pellets ?? 1;
             for (let i = 0; i < pelletCount; i++) {
               const spread = randRange(-weapon.spread * 2.2, weapon.spread * 2.2);
-              bulletsOut.push(new Bullet(this.x, this.y, this.facing + spread, weapon.bulletSpeed, weapon.damage, this.id));
+              bulletsOut.push(new Bullet(this.x, this.y, this.facing + spread, weapon.bulletSpeed, weapon.damage, this.id, weapon.range));
             }
           }
         } else if (!weapon.melee && this.mag <= 0) {

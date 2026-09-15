@@ -19,6 +19,9 @@ import {
   WEAPONS,
   MEDKIT_HEAL_AMOUNT,
   SNAPSHOT_SEND_MS,
+  SNAPSHOT_SCALE_START_PLAYERS,
+  SNAPSHOT_SEND_MS_PER_EXTRA_PLAYER,
+  SNAPSHOT_SEND_MS_MAX,
   HIDDEN_REVEAL_RANGE,
   SPECTATOR_SPEED,
   DEATH_EFFECT_MS,
@@ -122,6 +125,9 @@ export class Game {
       this.roomService.onLobby((val) => {
         this._latestLobby = val || {};
       });
+      // Wipes any leftover dropRequest from a just-ended round before this
+      // one starts processing input again — see clearAllInput()'s comment.
+      this.roomService.clearAllInput();
       this.roomService.startMatch(this._serializeMap()).catch((err) => {
         console.error("매치 시작 정보를 공유하지 못했습니다:", err);
       });
@@ -282,10 +288,19 @@ export class Game {
       }
     }
 
-    if (nowMs - this._lastSnapshotSentAt >= SNAPSHOT_SEND_MS || this._matchEnded) {
+    if (nowMs - this._lastSnapshotSentAt >= this._snapshotIntervalMs() || this._matchEnded) {
       this._lastSnapshotSentAt = nowMs;
       this.roomService.sendSnapshot(this._buildSnapshot(nowMs)).catch(() => {});
     }
+  }
+
+  // Backs off the broadcast rate as more real players fill the room — every
+  // snapshot fans out to everyone connected and grows with player/bot count,
+  // so left alone, total bandwidth would scale with the square of headcount.
+  _snapshotIntervalMs() {
+    const playerCount = this.remotePlayers.size + 1; // + the host's own avatar
+    const over = Math.max(0, playerCount - SNAPSHOT_SCALE_START_PLAYERS);
+    return Math.min(SNAPSHOT_SEND_MS_MAX, SNAPSHOT_SEND_MS + over * SNAPSHOT_SEND_MS_PER_EXTRA_PLAYER);
   }
 
   // Folds newly-dropped guests into the simulation and drops guests who
@@ -433,7 +448,7 @@ export class Game {
       if (!unit.alive) continue;
       const d = dist(unit.x, unit.y, grenade.targetX, grenade.targetY);
       if (d > GRENADE_EXPLOSION_RADIUS) continue;
-      unit.takeDamage(GRENADE_MAX_DAMAGE * (1 - d / GRENADE_EXPLOSION_RADIUS));
+      unit.takeDamage(GRENADE_MAX_DAMAGE * (1 - d / GRENADE_EXPLOSION_RADIUS), grenade.ownerId);
     }
 
     this.deathEffects.push({
@@ -447,9 +462,16 @@ export class Game {
   }
 
   // Fires once, right when a unit's health hits zero: a brief explosion burst
-  // at their position, and whatever they were carrying scattered on the ground
-  // as fresh (still-mystery) crates for whoever finds them.
+  // at their position, whatever they were carrying scattered on the ground as
+  // fresh (still-mystery) crates, a kill credited to whoever landed the fatal
+  // hit (see Unit.takeDamage), and this unit's final placement — how many
+  // units (including itself) were still alive the instant it died, which is
+  // exactly its finishing rank in a battle royale.
   _onUnitDeath(unit, nowMs) {
+    const killer = this._allUnits().find((u) => u !== unit && u.id === unit.lastDamagedBy);
+    if (killer) killer.kills += 1;
+    unit.placement = this._allUnits().filter((u) => u.alive).length + 1;
+
     this.deathEffects.push({
       x: unit.x,
       y: unit.y,
@@ -492,14 +514,30 @@ export class Game {
   }
 
   _endGame(didWin) {
+    if (didWin) this.player.placement = 1;
     this.stop();
-    if (this.onGameOver) this.onGameOver(didWin);
+    if (this.onGameOver) this.onGameOver(didWin, this._buildResults());
   }
 
   _endMatch(winnerUnit) {
     this._winnerUid = winnerUnit === this.player ? this.hostUid : (winnerUnit?.networkUid ?? null);
+    if (winnerUnit) winnerUnit.placement = 1;
     this.stop();
-    if (this.onGameOver) this.onGameOver(winnerUnit === this.player);
+    if (this.onGameOver) this.onGameOver(winnerUnit === this.player, this._buildResults());
+  }
+
+  // Ranked by finishing placement (1st = last unit standing). A unit that's
+  // still alive when a solo match cuts short (it ends the instant the local
+  // player dies, without playing the rest out) has no placement yet and is
+  // left out rather than shown with a made-up rank.
+  _buildResults() {
+    const rows = [];
+    for (const unit of this._allUnits()) {
+      if (unit.placement == null) continue;
+      rows.push({ name: unit.name, kills: unit.kills, placement: unit.placement, isMe: unit === this.player });
+    }
+    rows.sort((a, b) => a.placement - b.placement);
+    return rows;
   }
 
   // `meleeSwingUntil` is an absolute performance.now() timestamp, which is only
@@ -524,6 +562,8 @@ export class Game {
       punchHand: unit.punchHand,
       hidden: unit.hidden,
       name: unit.name,
+      kills: unit.kills,
+      placement: unit.placement,
     };
   }
 

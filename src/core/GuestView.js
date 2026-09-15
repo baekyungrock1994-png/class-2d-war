@@ -319,8 +319,27 @@ export class GuestView {
     if (this.snapshot?.matchOver && !this._matchOverNotified) {
       this._matchOverNotified = true;
       this.stop();
-      if (this.onGameOver) this.onGameOver(this.snapshot.winnerUid === this.myUid);
+      if (this.onGameOver) this.onGameOver(this.snapshot.winnerUid === this.myUid, this._buildResults());
     }
+  }
+
+  // Mirrors Game.js's _buildResults() using the final snapshot's plain
+  // player/bot objects instead of real Unit instances — same placement/kills
+  // fields, just read off whatever the host last broadcast.
+  _buildResults() {
+    const snap = this.snapshot;
+    if (!snap) return [];
+    const rows = [];
+    for (const [uid, p] of Object.entries(snap.players || {})) {
+      if (p.placement == null) continue;
+      rows.push({ name: p.name, kills: p.kills ?? 0, placement: p.placement, isMe: uid === this.myUid });
+    }
+    for (const b of Object.values(snap.bots || {})) {
+      if (b.placement == null) continue;
+      rows.push({ name: b.name, kills: b.kills ?? 0, placement: b.placement, isMe: false });
+    }
+    rows.sort((a, b) => a.placement - b.placement);
+    return rows;
   }
 
   // Eases a remote entity's rendered position toward `target` instead of

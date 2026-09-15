@@ -31,6 +31,7 @@ export const WEAPONS = {
     magSize: 12,
     reserveAmmo: 36,
     spread: 0.05,
+    range: 325, // px a bullet can travel before disappearing
   },
   rifle: {
     name: "돌격소총",
@@ -40,6 +41,7 @@ export const WEAPONS = {
     magSize: 30,
     reserveAmmo: 90,
     spread: 0.03,
+    range: 500,
   },
   shotgun: {
     name: "샷건",
@@ -50,6 +52,7 @@ export const WEAPONS = {
     magSize: 6,
     reserveAmmo: 18,
     spread: 0.18,
+    range: 160, // pellets lose their punch fast — a close-range weapon
   },
 };
 
@@ -124,8 +127,17 @@ export const ONLINE_TOTAL_SLOTS = 10; // real players + bots filling the rest
 export const ROOM_CODE_LENGTH = 5;
 export const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/1/I
 export const INPUT_SEND_MS = 50; // guest -> host
-export const SNAPSHOT_SEND_MS = 70; // host -> everyone
 export const HOST_STALE_MS = 4000; // no snapshot for this long => host presumed gone
+
+// Each snapshot broadcast fans out to every connected player, and its payload
+// grows with player/bot count — so total bandwidth scales roughly with the
+// square of the room's headcount. Sending less often as more real players
+// join keeps that from snowballing, at the cost of slightly choppier remote
+// rendering (guests still smooth this out — see REMOTE_SMOOTHING_PER_SEC).
+export const SNAPSHOT_SEND_MS = 70; // base interval, used at/below the scale threshold
+export const SNAPSHOT_SCALE_START_PLAYERS = 4; // real players (host + guests) before backing off
+export const SNAPSHOT_SEND_MS_PER_EXTRA_PLAYER = 15; // added per player beyond the threshold
+export const SNAPSHOT_SEND_MS_MAX = 200; // never back off further than this
 
 // How fast a guest's rendered view of remote entities (bots, other players,
 // bullets) eases toward each new snapshot value, instead of jumping straight
