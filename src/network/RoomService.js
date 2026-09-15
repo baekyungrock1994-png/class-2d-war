@@ -5,6 +5,9 @@ import {
   update,
   remove,
   onValue,
+  onChildAdded,
+  onChildChanged,
+  onChildRemoved,
   off,
   onDisconnect,
   runTransaction,
@@ -28,7 +31,7 @@ export class RoomService {
   constructor() {
     this.roomId = null;
     this.isHost = false;
-    this._listeners = new Set(); // { ref, callback } entries, for leaveRoom()'s cleanup sweep
+    this._listeners = new Set(); // unsubscribe functions, for leaveRoom()'s cleanup sweep
   }
 
   async _uid() {
@@ -188,9 +191,50 @@ export class RoomService {
     await update(ref(db, `rooms/${this.roomId}/input/${uid}`), { ...payload, t: Date.now() });
   }
 
-  // Host only: subscribes to every connected guest's latest input at once.
+  // Host only: subscribes to every connected guest's latest input.
+  //
+  // Deliberately NOT a plain onValue() on the whole `input` node: that fires
+  // with the *entire* input tree every time even one guest's entry changes,
+  // so with N guests each sending ~20 updates/sec, the host would end up
+  // parsing on the order of N^2 guest-entries' worth of data per second —
+  // the more people in the room, the worse everyone's frame time gets, even
+  // though only one guest actually changed anything.
+  //
+  // child_added/child_changed/child_removed instead deliver just the one
+  // entry that changed; a small local map is kept in sync from those and
+  // handed to the caller in full each time, so callers (Game.js) don't need
+  // to know the difference.
   onAllInput(callback) {
-    return this._subscribe(`rooms/${this.roomId}/input`, (val) => callback(val || {}));
+    const path = `rooms/${this.roomId}/input`;
+    const r = ref(db, path);
+    const merged = {};
+    const emit = () => callback({ ...merged });
+
+    const onAdded = (snap) => {
+      merged[snap.key] = snap.val();
+      emit();
+    };
+    const onChanged = (snap) => {
+      merged[snap.key] = snap.val();
+      emit();
+    };
+    const onRemoved = (snap) => {
+      delete merged[snap.key];
+      emit();
+    };
+
+    onChildAdded(r, onAdded);
+    onChildChanged(r, onChanged);
+    onChildRemoved(r, onRemoved);
+
+    const unsubscribe = () => {
+      off(r, "child_added", onAdded);
+      off(r, "child_changed", onChanged);
+      off(r, "child_removed", onRemoved);
+      this._listeners.delete(unsubscribe);
+    };
+    this._listeners.add(unsubscribe);
+    return unsubscribe;
   }
 
   // Host -> everyone: throttle calls to this on the caller's side (SNAPSHOT_SEND_MS).
@@ -217,17 +261,16 @@ export class RoomService {
     const r = ref(db, path);
     const wrapped = (snap) => callback(snap.val());
     onValue(r, wrapped);
-    const entry = { ref: r, callback: wrapped };
-    this._listeners.add(entry);
 
-    return () => {
-      off(entry.ref, "value", entry.callback);
-      this._listeners.delete(entry);
+    const unsubscribe = () => {
+      off(r, "value", wrapped);
+      this._listeners.delete(unsubscribe);
     };
+    this._listeners.add(unsubscribe);
+    return unsubscribe;
   }
 
   _offAll() {
-    for (const { ref: r, callback } of this._listeners) off(r, "value", callback);
-    this._listeners.clear();
+    for (const unsubscribe of [...this._listeners]) unsubscribe();
   }
 }
