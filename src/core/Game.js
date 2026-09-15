@@ -123,14 +123,27 @@ export class Game {
     // unit that exists, which would otherwise read as an instant win.
     this._maxRosterSeen = 0;
 
+    // A restart calls prepareMatch() again on the same Game/RoomService pair —
+    // drop this game's own previous input/lobby listeners first so they don't
+    // pile up alongside the new ones (each onX() call below is independent of
+    // Lobby.js's own listeners on these same paths, so this can't evict theirs).
+    if (this._unsubscribeHostListeners) {
+      this._unsubscribeHostListeners();
+      this._unsubscribeHostListeners = null;
+    }
+
     if (this.mode === "host") {
       this.hostUid = getUid();
-      this.roomService.onAllInput((val) => {
+      const offInput = this.roomService.onAllInput((val) => {
         this._latestGuestInputs = val || {};
       });
-      this.roomService.onLobby((val) => {
+      const offLobby = this.roomService.onLobby((val) => {
         this._latestLobby = val || {};
       });
+      this._unsubscribeHostListeners = () => {
+        offInput();
+        offLobby();
+      };
       // Wipes any leftover dropRequest from a just-ended round before this
       // one starts processing input again — see clearAllInput()'s comment.
       this.roomService.clearAllInput();

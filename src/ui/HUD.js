@@ -1,4 +1,4 @@
-import { WORLD_WIDTH, WEAPON_SLOTS, MEDKIT_SLOT, GRENADE_SLOT } from "../utils/constants.js";
+import { WORLD_WIDTH, WEAPON_SLOTS, MEDKIT_SLOT, GRENADE_SLOT, ZONE_PHASES } from "../utils/constants.js";
 
 export class HUD {
   constructor() {
@@ -81,6 +81,25 @@ export class HUD {
     ctx.strokeStyle = "#7ec8ff";
     ctx.lineWidth = 1.5;
     ctx.stroke();
+
+    // Same "next zone" dashed preview the main view draws (see SafeZone.draw) —
+    // only meaningful during the hold phase, and only while there's another
+    // shrink left to come.
+    if (safeZone.state === "hold" && safeZone.targetCenter && ZONE_PHASES[safeZone.phaseIndex + 1]) {
+      ctx.beginPath();
+      ctx.arc(
+        safeZone.targetCenter.x * scale,
+        safeZone.targetCenter.y * scale,
+        safeZone.targetRadius * scale,
+        0,
+        Math.PI * 2
+      );
+      ctx.strokeStyle = "rgba(255,255,255,0.7)";
+      ctx.setLineDash([3, 2]);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
 
     ctx.fillStyle = "#3f8efc";
     ctx.beginPath();

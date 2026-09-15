@@ -28,7 +28,7 @@ export class RoomService {
   constructor() {
     this.roomId = null;
     this.isHost = false;
-    this._listeners = new Map(); // path -> { ref, callback } for cleanup, keyed so re-subscribing (e.g. a restarted match) replaces rather than stacks
+    this._listeners = new Set(); // { ref, callback } entries, for leaveRoom()'s cleanup sweep
   }
 
   async _uid() {
@@ -156,18 +156,24 @@ export class RoomService {
     await update(ref(db, `rooms/${this.roomId}`), { status: "ended", result });
   }
 
+  // Each onX() below returns an unsubscribe function. Multiple independent
+  // listeners on the same path are fine and expected — e.g. Lobby.js and
+  // Game.js both watch `lobby` for their own separate reasons — so callers
+  // that re-subscribe over a match's lifetime (Game.prepareMatch() on a host
+  // restart, GuestView per round) are responsible for calling their own
+  // previous unsubscribe first; see Game.js/GuestView.js.
   onLobby(callback) {
-    this._subscribe(`rooms/${this.roomId}/lobby`, (val) => callback(val || {}));
+    return this._subscribe(`rooms/${this.roomId}/lobby`, (val) => callback(val || {}));
   }
 
   onStatus(callback) {
-    this._subscribe(`rooms/${this.roomId}/status`, (val) => callback(val || "lobby"));
+    return this._subscribe(`rooms/${this.roomId}/status`, (val) => callback(val || "lobby"));
   }
 
   // Fires once for the first match and again every time the host restarts
   // the room (see startMatch's `round` marker) — callback gets { map, round }.
   onMatch(callback) {
-    this._subscribe(`rooms/${this.roomId}/match`, (val) => {
+    return this._subscribe(`rooms/${this.roomId}/match`, (val) => {
       if (val) callback(val);
     });
   }
@@ -184,7 +190,7 @@ export class RoomService {
 
   // Host only: subscribes to every connected guest's latest input at once.
   onAllInput(callback) {
-    this._subscribe(`rooms/${this.roomId}/input`, (val) => callback(val || {}));
+    return this._subscribe(`rooms/${this.roomId}/input`, (val) => callback(val || {}));
   }
 
   // Host -> everyone: throttle calls to this on the caller's side (SNAPSHOT_SEND_MS).
@@ -194,7 +200,7 @@ export class RoomService {
   }
 
   onSnapshot(callback) {
-    this._subscribe(`rooms/${this.roomId}/snapshot`, (val) => {
+    return this._subscribe(`rooms/${this.roomId}/snapshot`, (val) => {
       if (val) callback(val);
     });
   }
@@ -205,21 +211,23 @@ export class RoomService {
     await update(ref(db, `rooms/${this.roomId}/input/${uid}`), { dropRequest: { x, y } });
   }
 
-  // Keyed by path so subscribing twice to the same path (e.g. Game.prepareMatch()
-  // re-running onAllInput()/onLobby() on a host restart) replaces the old
-  // listener instead of stacking a duplicate one alongside it.
+  // Returns an unsubscribe function. Also tracked in _listeners so leaveRoom()
+  // can sweep up anything a caller forgot to unsubscribe itself.
   _subscribe(path, callback) {
-    const prev = this._listeners.get(path);
-    if (prev) off(prev.ref, "value", prev.callback);
-
     const r = ref(db, path);
     const wrapped = (snap) => callback(snap.val());
     onValue(r, wrapped);
-    this._listeners.set(path, { ref: r, callback: wrapped });
+    const entry = { ref: r, callback: wrapped };
+    this._listeners.add(entry);
+
+    return () => {
+      off(entry.ref, "value", entry.callback);
+      this._listeners.delete(entry);
+    };
   }
 
   _offAll() {
-    for (const { ref: r, callback } of this._listeners.values()) off(r, "value", callback);
+    for (const { ref: r, callback } of this._listeners) off(r, "value", callback);
     this._listeners.clear();
   }
 }

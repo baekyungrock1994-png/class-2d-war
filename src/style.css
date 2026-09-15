@@ -214,28 +214,6 @@ html, body {
   gap: 12px;
 }
 
-#user-badge {
-  position: absolute;
-  top: 16px;
-  right: 16px;
-  z-index: 5;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 12px;
-  background: rgba(0, 0, 0, 0.5);
-  border: 1px solid #444;
-  border-radius: 20px;
-  color: #fff;
-  font-size: 13px;
-}
-
-#google-login-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .field-label {
   font-size: 13px;
   color: #ccc;

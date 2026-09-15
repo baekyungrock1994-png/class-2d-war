@@ -1,5 +1,7 @@
 import { ONLINE_TOTAL_SLOTS } from "../utils/constants.js";
-import { getCurrentUser, getUid } from "../network/firebase.js";
+import { getUid } from "../network/firebase.js";
+
+const NICKNAME_STORAGE_KEY = "2dwar_nickname";
 
 // Owns the two pre-match online screens: the create/join menu and the room
 // lobby (player list + host's start button). Room create/join talk to
@@ -56,10 +58,30 @@ export class Lobby {
     this.hide();
     this._setError("");
     if (!this.nameInput.value) {
-      const user = getCurrentUser();
-      if (user?.displayName) this.nameInput.value = user.displayName;
+      const saved = this._loadNickname();
+      if (saved) this.nameInput.value = saved;
     }
     this.onlineMenuScreen.classList.remove("hidden");
+  }
+
+  // No account behind the nickname (see firebase.js's anonymous sign-in) —
+  // just remember the last one typed on this device, .io-game style, so
+  // returning players don't have to retype it every time.
+  _loadNickname() {
+    try {
+      return localStorage.getItem(NICKNAME_STORAGE_KEY) || "";
+    } catch {
+      return "";
+    }
+  }
+
+  _saveNickname(name) {
+    if (!name) return;
+    try {
+      localStorage.setItem(NICKNAME_STORAGE_KEY, name);
+    } catch {
+      // Private browsing or storage disabled — nothing to remember, no harm done.
+    }
   }
 
   hide() {
@@ -74,8 +96,10 @@ export class Lobby {
 
   async _createRoom() {
     this._setError("");
+    const name = this.nameInput.value.trim();
     try {
-      const roomId = await this.roomService.createRoom(this.nameInput.value.trim());
+      const roomId = await this.roomService.createRoom(name);
+      this._saveNickname(name);
       this._enterRoomLobby(roomId, true);
     } catch (err) {
       this._setError(err.message || "방을 만들지 못했습니다.");
@@ -89,8 +113,10 @@ export class Lobby {
       this._setError("방 코드를 입력해주세요.");
       return;
     }
+    const name = this.nameInput.value.trim();
     try {
-      const roomId = await this.roomService.joinRoom(code, this.nameInput.value.trim());
+      const roomId = await this.roomService.joinRoom(code, name);
+      this._saveNickname(name);
       this._enterRoomLobby(roomId, this.roomService.isHost);
     } catch (err) {
       this._setError(err.message || "참가하지 못했습니다.");

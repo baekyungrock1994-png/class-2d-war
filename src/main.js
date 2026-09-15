@@ -3,7 +3,7 @@ import { GuestView } from "./core/GuestView.js";
 import { DropSelect } from "./ui/DropSelect.js";
 import { Lobby } from "./ui/Lobby.js";
 import { RoomService } from "./network/RoomService.js";
-import { getUid, getCurrentUser, onAuthChange, signInWithGoogle, signOutUser } from "./network/firebase.js";
+import { getUid } from "./network/firebase.js";
 import { WORLD_WIDTH, WORLD_HEIGHT } from "./utils/constants.js";
 
 const FULL_MAP_ZONE = {
@@ -25,14 +25,6 @@ const onlineBtn = document.getElementById("online-btn");
 const restartBtn = document.getElementById("restart-btn");
 const endMenuBtn = document.getElementById("end-menu-btn");
 
-const loginScreen = document.getElementById("login-screen");
-const googleLoginBtn = document.getElementById("google-login-btn");
-const loginBackBtn = document.getElementById("login-back-btn");
-const loginErrorText = document.getElementById("login-error-text");
-const userBadge = document.getElementById("user-badge");
-const userNameText = document.getElementById("user-name-text");
-const logoutBtn = document.getElementById("logout-btn");
-
 const game = new Game(canvas);
 if (import.meta.env.DEV) window.__game = game; // debug hook for inspecting live state from the console
 
@@ -50,7 +42,6 @@ function hideTransientScreens() {
 
 function showStart() {
   hideTransientScreens();
-  loginScreen.classList.add("hidden");
   lobby.hide();
   startScreen.classList.remove("hidden");
 }
@@ -96,48 +87,6 @@ function showInfoScreen(title) {
   endMenuBtn.classList.remove("hidden");
   endScreen.classList.remove("hidden");
 }
-
-// --- Login (Google) -----------------------------------------------------------
-
-function updateUserBadge() {
-  const user = getCurrentUser();
-  if (user) {
-    userNameText.textContent = user.displayName || "플레이어";
-    userBadge.classList.remove("hidden");
-  } else {
-    userBadge.classList.add("hidden");
-  }
-}
-
-onAuthChange(updateUserBadge);
-updateUserBadge();
-
-function showLoginScreen() {
-  hideTransientScreens();
-  startScreen.classList.add("hidden");
-  loginErrorText.classList.add("hidden");
-  loginScreen.classList.remove("hidden");
-}
-
-googleLoginBtn.addEventListener("click", async () => {
-  loginErrorText.classList.add("hidden");
-  try {
-    await signInWithGoogle();
-    loginScreen.classList.add("hidden");
-    lobby.showOnlineMenu();
-  } catch (err) {
-    loginErrorText.textContent = err.message || "로그인에 실패했습니다.";
-    loginErrorText.classList.remove("hidden");
-  }
-});
-
-loginBackBtn.addEventListener("click", () => showStart());
-
-logoutBtn.addEventListener("click", async () => {
-  if (roomService.roomId) await roomService.leaveRoom();
-  await signOutUser();
-  showStart();
-});
 
 // --- Solo (offline vs bots) --------------------------------------------------
 
@@ -228,12 +177,8 @@ function startGuestFlow() {
 // --- Lobby wiring ------------------------------------------------------------------
 
 onlineBtn.addEventListener("click", () => {
-  if (getCurrentUser()) {
-    startScreen.classList.add("hidden");
-    lobby.showOnlineMenu();
-  } else {
-    showLoginScreen();
-  }
+  startScreen.classList.add("hidden");
+  lobby.showOnlineMenu();
 });
 
 lobby.onLeave = () => showStart();

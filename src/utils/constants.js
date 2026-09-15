@@ -31,7 +31,7 @@ export const WEAPONS = {
     magSize: 12,
     reserveAmmo: 36,
     spread: 0.05,
-    range: 325, // px a bullet can travel before disappearing
+    range: 250, // px a bullet can travel before disappearing
   },
   rifle: {
     name: "돌격소총",
@@ -41,7 +41,7 @@ export const WEAPONS = {
     magSize: 30,
     reserveAmmo: 90,
     spread: 0.03,
-    range: 500,
+    range: 300,
   },
   shotgun: {
     name: "샷건",

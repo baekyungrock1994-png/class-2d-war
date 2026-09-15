@@ -107,7 +107,7 @@ export class GuestView {
     this.running = true;
     this._lastTs = performance.now();
     this._lastSnapshotAt = performance.now();
-    this.roomService.onSnapshot((snap) => {
+    this._unsubscribeSnapshot = this.roomService.onSnapshot((snap) => {
       this.snapshot = this._hydrateSnapshot(snap);
       this._lastSnapshotAt = performance.now();
       this._reconcileMyPlayer();
@@ -123,8 +123,12 @@ export class GuestView {
     this.hud.hide();
   }
 
+  // A host restart replaces this whole GuestView with a fresh one for the new
+  // round (see main.js's enterGuestRound) — unsubscribe this instance's own
+  // snapshot listener so it doesn't keep firing into an abandoned object.
   destroy() {
     this.stop();
+    if (this._unsubscribeSnapshot) this._unsubscribeSnapshot();
     window.removeEventListener("resize", this._resizeHandler);
   }
 
