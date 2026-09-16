@@ -13,6 +13,13 @@ export const BOT_COUNT = 19; // + 1 human player = 20 total, like a small match
 
 export const CAMERA_ZOOM = 1.8;
 
+// How far outside the camera's edge a unit can still poke into view (name
+// label above its head, weapon reach) before the per-frame draw loop skips
+// it entirely. The map/loot renderers already cull this way (see GameMap.js,
+// Loot.js) — this extends the same cheap camera check to units and bullets,
+// which is where it matters most since their count scales with player count.
+export const UNIT_CULL_MARGIN = 50;
+
 export const FALL_DURATION_MS = 3200;
 
 export const WEAPONS = {

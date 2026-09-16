@@ -38,6 +38,8 @@ import {
   GRENADE_EXPLOSION_DEBRIS_COUNT,
   WORLD_WIDTH,
   WORLD_HEIGHT,
+  UNIT_CULL_MARGIN,
+  BULLET_RADIUS,
 } from "../utils/constants.js";
 import { dist, randRange, clamp } from "../utils/math.js";
 
@@ -697,12 +699,19 @@ export class Game {
     this.safeZone.draw(ctx, camera);
 
     for (const bot of this.bots) {
-      if (bot.alive && this._visibleToLocalPlayer(bot)) bot.draw(ctx);
+      if (!bot.alive || !this._visibleToLocalPlayer(bot)) continue;
+      if (!camera.isRoughlyVisible(bot.x, bot.y, bot.radius + UNIT_CULL_MARGIN)) continue;
+      bot.draw(ctx);
     }
     for (const rp of this.remotePlayers.values()) {
-      if (rp.alive && this._visibleToLocalPlayer(rp)) rp.drawBody(ctx, "#b565d8", "#555");
+      if (!rp.alive || !this._visibleToLocalPlayer(rp)) continue;
+      if (!camera.isRoughlyVisible(rp.x, rp.y, rp.radius + UNIT_CULL_MARGIN)) continue;
+      rp.drawBody(ctx, "#b565d8", "#555");
     }
-    for (const bullet of this.bullets) bullet.draw(ctx);
+    for (const bullet of this.bullets) {
+      if (!camera.isRoughlyVisible(bullet.x, bullet.y, BULLET_RADIUS)) continue;
+      bullet.draw(ctx);
+    }
 
     if (this.player.alive) this.player.draw(ctx);
 

@@ -21,6 +21,7 @@ import {
   REMOTE_SMOOTHING_PER_SEC,
   RECONCILE_SNAP_DISTANCE,
   SPECTATOR_SPEED,
+  UNIT_CULL_MARGIN,
 } from "../utils/constants.js";
 import { dist, clamp } from "../utils/math.js";
 
@@ -396,14 +397,17 @@ export class GuestView {
     for (const [id, bot] of Object.entries(snap?.bots || {})) {
       if (!bot.alive || !this._visibleToMe(bot)) continue;
       const eased = this._easedPosition(`bot:${id}`, bot.x, bot.y, dtSec);
+      if (!camera.isRoughlyVisible(eased.x, eased.y, bot.radius + UNIT_CULL_MARGIN)) continue;
       drawUnit(ctx, { ...bot, x: eased.x, y: eased.y }, "#e05a5a", "#555");
     }
     for (const [uid, p] of Object.entries(snap?.players || {})) {
       if (uid === this.myUid || !p.alive || !this._visibleToMe(p)) continue;
       const eased = this._easedPosition(`player:${uid}`, p.x, p.y, dtSec);
+      if (!camera.isRoughlyVisible(eased.x, eased.y, p.radius + UNIT_CULL_MARGIN)) continue;
       drawUnit(ctx, { ...p, x: eased.x, y: eased.y }, "#b565d8", "#555");
     }
     for (const bullet of snap?.bullets || []) {
+      if (!camera.isRoughlyVisible(bullet.x, bullet.y, BULLET_RADIUS)) continue;
       ctx.fillStyle = "#fff59d";
       ctx.beginPath();
       ctx.arc(bullet.x, bullet.y, BULLET_RADIUS, 0, Math.PI * 2);
