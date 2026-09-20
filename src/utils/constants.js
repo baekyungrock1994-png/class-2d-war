@@ -134,22 +134,18 @@ export const ONLINE_TOTAL_SLOTS = 10; // real players + bots filling the rest
 export const ROOM_CODE_LENGTH = 5;
 export const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/1/I
 export const INPUT_SEND_MS = 50; // guest -> host
-export const HOST_STALE_MS = 4000; // no snapshot for this long => host presumed gone
+export const HOST_STALE_MS = 10000; // no snapshot for this long => host presumed gone
+export const HOST_WARN_MS = 3500; // show "waiting for host" banner if quiet this long
 
-// Each snapshot broadcast fans out to every connected player, and its payload
-// grows with player/bot count — so total bandwidth scales roughly with the
-// square of the room's headcount. Sending less often as more real players
-// join keeps that from snowballing, at the cost of slightly choppier remote
-// rendering (guests still smooth this out — see REMOTE_SMOOTHING_PER_SEC).
-export const SNAPSHOT_SEND_MS = 70; // base interval, used at/below the scale threshold
+// Each snapshot broadcast fans out to every connected player.
+export const SNAPSHOT_SEND_MS = 50; // base interval (20Hz)
 export const SNAPSHOT_SCALE_START_PLAYERS = 4; // real players (host + guests) before backing off
-export const SNAPSHOT_SEND_MS_PER_EXTRA_PLAYER = 15; // added per player beyond the threshold
-export const SNAPSHOT_SEND_MS_MAX = 200; // never back off further than this
+export const SNAPSHOT_SEND_MS_PER_EXTRA_PLAYER = 10; // added per player beyond the threshold
+export const SNAPSHOT_SEND_MS_MAX = 100; // never back off further than this
 
-// How fast a guest's rendered view of remote entities (bots, other players,
-// bullets) eases toward each new snapshot value, instead of jumping straight
-// to it — smooths out the gaps between snapshots into a steady glide.
-export const REMOTE_SMOOTHING_PER_SEC = 12;
+// How fast a guest's rendered view of remote entities (bots, other players)
+// eases toward each new snapshot value, instead of jumping straight to it.
+export const REMOTE_SMOOTHING_PER_SEC = 16;
 // If the host's reported position for the guest's own predicted player drifts
 // past this, snap immediately instead of easing (avoids a slow "rubber-band").
 export const RECONCILE_SNAP_DISTANCE = 140;

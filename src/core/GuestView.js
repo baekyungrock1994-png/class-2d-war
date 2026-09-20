@@ -8,6 +8,8 @@ import { drawUnit } from "../render/drawUnit.js";
 import { drawDeathEffects } from "../render/drawDeathEffect.js";
 import { drawGrenades } from "../render/drawGrenades.js";
 import { Player } from "../entities/Player.js";
+import { Bullet } from "../entities/Bullet.js";
+import { P2PTransport } from "../network/P2PTransport.js";
 import {
   MEDKIT_SLOT,
   GRENADE_SLOT,
@@ -17,13 +19,14 @@ import {
   WORLD_HEIGHT,
   BULLET_RADIUS,
   HOST_STALE_MS,
+  HOST_WARN_MS,
   HIDDEN_REVEAL_RANGE,
   REMOTE_SMOOTHING_PER_SEC,
   RECONCILE_SNAP_DISTANCE,
   SPECTATOR_SPEED,
   UNIT_CULL_MARGIN,
 } from "../utils/constants.js";
-import { dist, clamp } from "../utils/math.js";
+import { dist, clamp, circleRectPush } from "../utils/math.js";
 
 const FULL_MAP_ZONE = {
   centerX: WORLD_WIDTH / 2,
@@ -59,6 +62,10 @@ export class GuestView {
     this.spectator = null; // {x, y} free-look camera target once this player dies
     this.snapshot = null;
     this._remoteRender = new Map(); // uid/botId -> eased {x, y} for smooth rendering
+    this.localBullets = new Map(); // id -> Bullet
+    this.p2p = new P2PTransport(roomService, false, myUid);
+    this.isWaitingHost = false;
+    this._lastSnapshotServerTs = 0;
 
     this.running = false;
     this._rafId = null;
@@ -108,19 +115,64 @@ export class GuestView {
     this.running = true;
     this._lastTs = performance.now();
     this._lastSnapshotAt = performance.now();
+
+    // 1. WebRTC P2P DataChannel listener (ultra-low latency)
+    this.p2p.start();
+    this.p2p.onData = (_, snap) => {
+      this._onReceiveSnapshot(snap);
+    };
+
+    // 2. Firebase RTDB listener (reliable fallback)
     this._unsubscribeSnapshot = this.roomService.onSnapshot((snap) => {
-      this.snapshot = this._hydrateSnapshot(snap);
-      this._lastSnapshotAt = performance.now();
-      this._reconcileMyPlayer();
-      this._checkLocalDeath();
-      this._checkMatchOver();
+      this._onReceiveSnapshot(snap);
     });
+
     this._rafId = requestAnimationFrame((ts) => this._loop(ts));
+  }
+
+  _onReceiveSnapshot(snap) {
+    if (!snap) return;
+    // Discard older snapshots if out-of-order packets arrive
+    if (snap.t && snap.t < this._lastSnapshotServerTs) return;
+    if (snap.t) this._lastSnapshotServerTs = snap.t;
+
+    this.snapshot = this._hydrateSnapshot(snap);
+    this._lastSnapshotAt = performance.now();
+    this.isWaitingHost = false;
+
+    this._syncBulletEvents(snap.bulletEvents);
+    this._reconcileMyPlayer();
+    this._checkLocalDeath();
+    this._checkMatchOver();
+  }
+
+  _syncBulletEvents(events) {
+    if (!events || !Array.isArray(events)) return;
+    const now = performance.now();
+    const obstacles = this.mapData?.obstacles ?? [];
+
+    for (const be of events) {
+      if (!this.localBullets.has(be.id)) {
+        const angle = Math.atan2(be.vy, be.vx);
+        const b = new Bullet(be.x, be.y, angle, be.speed, 0, be.ownerId, be.range);
+        b.id = be.id;
+
+        // Catch up on flight distance if event arrived slightly late
+        const elapsedMs = Math.max(0, now - (be.t || now));
+        if (elapsedMs > 0 && elapsedMs < 1000) {
+          b.update(elapsedMs, obstacles, []);
+        }
+        if (!b.dead) {
+          this.localBullets.set(be.id, b);
+        }
+      }
+    }
   }
 
   stop() {
     this.running = false;
     if (this._rafId) cancelAnimationFrame(this._rafId);
+    if (this.p2p) this.p2p.destroy();
     this.hud.hide();
   }
 
@@ -130,6 +182,7 @@ export class GuestView {
   destroy() {
     this.stop();
     if (this._unsubscribeSnapshot) this._unsubscribeSnapshot();
+    if (this.p2p) this.p2p.destroy();
     window.removeEventListener("resize", this._resizeHandler);
   }
 
@@ -141,11 +194,9 @@ export class GuestView {
     this._checkHostAlive();
     if (!this.running) return; // _checkHostAlive may have stopped us
 
-    // An uncaught error here previously killed this tab's rAF chain outright —
-    // the whole match would silently freeze for this one player while the host
-    // (and everyone else) kept going. Log and skip the frame instead of dying.
     try {
       this._updateMyPlayer(dtMs);
+      this._updateLocalBullets(dtMs);
       this._sendInputThrottled();
       this._draw(dtMs);
     } catch (err) {
@@ -156,9 +207,22 @@ export class GuestView {
     this._rafId = requestAnimationFrame((t) => this._loop(t));
   }
 
+  _updateLocalBullets(dtMs) {
+    const obstacles = this.mapData?.obstacles ?? [];
+    for (const [id, bullet] of this.localBullets) {
+      bullet.update(dtMs, obstacles, []);
+      if (bullet.dead) {
+        this.localBullets.delete(id);
+      }
+    }
+  }
+
   _checkHostAlive() {
     if (this._hostLostNotified) return;
-    if (performance.now() - this._lastSnapshotAt > HOST_STALE_MS) {
+    const quietMs = performance.now() - this._lastSnapshotAt;
+    this.isWaitingHost = quietMs > HOST_WARN_MS;
+
+    if (quietMs > HOST_STALE_MS) {
       this._hostLostNotified = true;
       this.stop();
       if (this.onHostLost) this.onHostLost();
@@ -221,25 +285,29 @@ export class GuestView {
     this._lastSendAt = now;
     if (!this.myPlayer || !this.myPlayer.alive) return;
 
-    // _updateMyPlayer() already ran this frame and set this.myPlayer.facing via
-    // local auto-aim — just report that, rather than recomputing it here.
     if (this.input.wasJustPressed(MEDKIT_SLOT.code)) this._medkitSeq += 1;
     if (this.input.wasJustPressed(GRENADE_SLOT.code)) this._grenadeSeq += 1;
 
-    this.roomService
-      .sendInput({
-        up: this.input.isDown("KeyW") || this.input.isDown("ArrowUp"),
-        down: this.input.isDown("KeyS") || this.input.isDown("ArrowDown"),
-        left: this.input.isDown("KeyA") || this.input.isDown("ArrowLeft"),
-        right: this.input.isDown("KeyD") || this.input.isDown("ArrowRight"),
-        reload: this.input.isDown("KeyR"),
-        firing: this.input.isDown(FIRE_KEY_CODE),
-        facing: this.myPlayer.facing,
-        desiredWeapon: this.myPlayer.weaponKey,
-        medkitSeq: this._medkitSeq,
-        grenadeSeq: this._grenadeSeq,
-      })
-      .catch(() => {});
+    const payload = {
+      up: this.input.isDown("KeyW") || this.input.isDown("ArrowUp"),
+      down: this.input.isDown("KeyS") || this.input.isDown("ArrowDown"),
+      left: this.input.isDown("KeyA") || this.input.isDown("ArrowLeft"),
+      right: this.input.isDown("KeyD") || this.input.isDown("ArrowRight"),
+      reload: this.input.isDown("KeyR"),
+      firing: this.input.isDown(FIRE_KEY_CODE),
+      facing: this.myPlayer.facing,
+      desiredWeapon: this.myPlayer.weaponKey,
+      medkitSeq: this._medkitSeq,
+      grenadeSeq: this._grenadeSeq,
+    };
+
+    // 1. Send via WebRTC P2P DataChannel if ready (ultra-low latency 10~30ms)
+    const sentViaP2p = this.p2p ? this.p2p.sendToHost(payload) : false;
+
+    // 2. Fallback to Firebase if P2P not yet connected
+    if (!sentViaP2p) {
+      this.roomService.sendInput(payload).catch(() => {});
+    }
   }
 
   // The host sends `meleeSwingRemainingMs` (a duration, clock-independent) rather
@@ -275,9 +343,9 @@ export class GuestView {
   }
 
   // Health/inventory/ammo are host-decided (crates, damage), so they're synced
-  // in outright. Position is only *nudged* toward the host's copy — small drift
-  // eases out over a couple of snapshots, large drift (e.g. still catching up
-  // right after landing) snaps immediately instead of slowly rubber-banding.
+  // in outright. Position is reconciled toward the host's copy while STRICTLY
+  // respecting obstacle walls so lag never causes the player to clip through or
+  // get sucked into structures.
   _reconcileMyPlayer() {
     const me = this.snapshot?.players?.[this.myUid];
     if (!me || !this.myPlayer) return;
@@ -290,23 +358,47 @@ export class GuestView {
     this.myPlayer.mag = me.mag;
     this.myPlayer.reserveAmmo = me.reserveAmmo;
 
-    // The host is the only one that ever runs acquireWeapon() for this player
-    // (crates are host-authoritative), so weaponAmmo — a purely local cache
-    // equipWeapon() reads from — would otherwise stay empty for any weapon
-    // picked up remotely. Keep at least the host's currently-equipped weapon
-    // backed by real numbers; equipWeapon() itself now also tolerates a still-
-    // missing entry for any other owned weapon by starting it at a full mag.
     if (me.weaponKey && me.weaponKey !== "fist") {
       this.myPlayer.weaponAmmo[me.weaponKey] = { mag: me.mag, reserve: me.reserveAmmo };
     }
 
+    const obstacles = this.mapData?.obstacles ?? [];
     const driftDist = dist(this.myPlayer.x, this.myPlayer.y, me.x, me.y);
-    if (driftDist > RECONCILE_SNAP_DISTANCE) {
-      this.myPlayer.x = me.x;
-      this.myPlayer.y = me.y;
-    } else if (driftDist > 4) {
-      this.myPlayer.x += (me.x - this.myPlayer.x) * 0.25;
-      this.myPlayer.y += (me.y - this.myPlayer.y) * 0.25;
+
+    if (this.myPlayer.falling) {
+      if (driftDist > RECONCILE_SNAP_DISTANCE) {
+        this.myPlayer.x = me.x;
+        this.myPlayer.y = me.y;
+      }
+    } else {
+      if (driftDist > RECONCILE_SNAP_DISTANCE) {
+        // Snap to host position, then immediately push out of any obstacle walls
+        this.myPlayer.x = clamp(me.x, this.myPlayer.radius, WORLD_WIDTH - this.myPlayer.radius);
+        this.myPlayer.y = clamp(me.y, this.myPlayer.radius, WORLD_HEIGHT - this.myPlayer.radius);
+        for (const rect of obstacles) {
+          const push = circleRectPush(this.myPlayer.x, this.myPlayer.y, this.myPlayer.radius, rect);
+          if (push) {
+            this.myPlayer.x += push.x;
+            this.myPlayer.y += push.y;
+          }
+        }
+      } else if (driftDist > 3) {
+        // Nudge gently toward host, but never push through walls
+        const stepX = (me.x - this.myPlayer.x) * 0.25;
+        const stepY = (me.y - this.myPlayer.y) * 0.25;
+        this.myPlayer.x += stepX;
+        this.myPlayer.y += stepY;
+        this.myPlayer.x = clamp(this.myPlayer.x, this.myPlayer.radius, WORLD_WIDTH - this.myPlayer.radius);
+        this.myPlayer.y = clamp(this.myPlayer.y, this.myPlayer.radius, WORLD_HEIGHT - this.myPlayer.radius);
+
+        for (const rect of obstacles) {
+          const push = circleRectPush(this.myPlayer.x, this.myPlayer.y, this.myPlayer.radius, rect);
+          if (push) {
+            this.myPlayer.x += push.x;
+            this.myPlayer.y += push.y;
+          }
+        }
+      }
     }
   }
 
@@ -406,13 +498,22 @@ export class GuestView {
       if (!camera.isRoughlyVisible(eased.x, eased.y, p.radius + UNIT_CULL_MARGIN)) continue;
       drawUnit(ctx, { ...p, x: eased.x, y: eased.y }, "#b565d8", "#555");
     }
-    for (const bullet of snap?.bullets || []) {
+    // Render smooth local bullets (60fps simulation from synchronized fire events)
+    for (const bullet of this.localBullets.values()) {
       if (!camera.isRoughlyVisible(bullet.x, bullet.y, BULLET_RADIUS)) continue;
-      ctx.fillStyle = "#fff59d";
-      ctx.beginPath();
-      ctx.arc(bullet.x, bullet.y, BULLET_RADIUS, 0, Math.PI * 2);
-      ctx.fill();
+      bullet.draw(ctx);
     }
+    // Fallback: if no local bullets, render snapshot bullets
+    if (this.localBullets.size === 0) {
+      for (const bullet of snap?.bullets || []) {
+        if (!camera.isRoughlyVisible(bullet.x, bullet.y, BULLET_RADIUS)) continue;
+        ctx.fillStyle = "#fff59d";
+        ctx.beginPath();
+        ctx.arc(bullet.x, bullet.y, BULLET_RADIUS, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
     if (this.myPlayer.alive) this.myPlayer.draw(ctx);
 
     drawGrenades(ctx, snap?.grenades || [], performance.now());
@@ -426,5 +527,20 @@ export class GuestView {
       ...zone,
       timeUntilNextShrinkMs: () => zone.timeUntilNextShrinkMs ?? 0,
     });
+
+    if (this.isWaitingHost) {
+      ctx.save();
+      ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
+      ctx.fillRect(camera.viewWidth / 2 - 130, 60, 260, 34);
+      ctx.strokeStyle = "#e05a5a";
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(camera.viewWidth / 2 - 130, 60, 260, 34);
+      ctx.fillStyle = "#ffeb3b";
+      ctx.font = "bold 13px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("⚠️ 호스트 응답 대기 중...", camera.viewWidth / 2, 77);
+      ctx.restore();
+    }
   }
 }

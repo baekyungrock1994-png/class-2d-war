@@ -7,6 +7,7 @@ import { Camera } from "./Camera.js";
 import { Input } from "./Input.js";
 import { HUD } from "../ui/HUD.js";
 import { RemoteInputAdapter } from "../network/RemoteInputAdapter.js";
+import { P2PTransport } from "../network/P2PTransport.js";
 import { getUid } from "../network/firebase.js";
 import { drawDeathEffects } from "../render/drawDeathEffect.js";
 import { drawGrenades } from "../render/drawGrenades.js";
@@ -118,36 +119,44 @@ export class Game {
     this._localDeathNotified = false;
     this._lastSnapshotSentAt = 0;
     this._winnerUid = null;
-    // Guards the "last one standing" check below from firing before the match
-    // has actually got more than one participant — with 0 bots, a guest's
-    // drop request takes a network round-trip to turn into a remotePlayers
-    // entry, so for a moment right after beginDrop() the host is the *only*
-    // unit that exists, which would otherwise read as an instant win.
     this._maxRosterSeen = 0;
+    this._recentBulletEvents = [];
+    this._bgIntervalId = null;
 
-    // A restart calls prepareMatch() again on the same Game/RoomService pair —
-    // drop this game's own previous input/lobby listeners first so they don't
-    // pile up alongside the new ones (each onX() call below is independent of
-    // Lobby.js's own listeners on these same paths, so this can't evict theirs).
     if (this._unsubscribeHostListeners) {
       this._unsubscribeHostListeners();
       this._unsubscribeHostListeners = null;
     }
+    if (this.p2p) {
+      this.p2p.destroy();
+      this.p2p = null;
+    }
 
     if (this.mode === "host") {
       this.hostUid = getUid();
+      this.p2p = new P2PTransport(this.roomService, true, this.hostUid);
+      this.p2p.start();
+      this.p2p.onData = (guestUid, payload) => {
+        this._latestGuestInputs[guestUid] = payload;
+      };
+
       const offInput = this.roomService.onAllInput((val) => {
         this._latestGuestInputs = val || {};
       });
       const offLobby = this.roomService.onLobby((val) => {
         this._latestLobby = val || {};
+        // Automatically establish WebRTC P2P connection to new guests
+        for (const uid of Object.keys(this._latestLobby)) {
+          if (uid !== this.hostUid && !this.p2p.peers.has(uid)) {
+            this.p2p.connectToGuest(uid);
+          }
+        }
       });
       this._unsubscribeHostListeners = () => {
         offInput();
         offLobby();
       };
-      // Wipes any leftover dropRequest from a just-ended round before this
-      // one starts processing input again — see clearAllInput()'s comment.
+
       this.roomService.clearAllInput();
       this.roomService.startMatch(this._serializeMap()).catch((err) => {
         console.error("매치 시작 정보를 공유하지 못했습니다:", err);
@@ -169,11 +178,37 @@ export class Game {
     this.running = true;
     this._lastTs = performance.now();
     this._rafId = requestAnimationFrame((ts) => this._loop(ts));
+
+    // Background heartbeat ticker: ensures simulation and snapshot broadcasts continue
+    // even if browser tab is minimized or inactive (where requestAnimationFrame freezes)
+    if (this._bgIntervalId) clearInterval(this._bgIntervalId);
+    this._bgIntervalId = setInterval(() => {
+      if (!this.running) return;
+      const now = performance.now();
+      // If rAF hasn't fired in > 70ms, tab is backgrounded -> step physics & sync
+      if (now - this._lastTs > 70) {
+        const dtMs = Math.min(50, now - this._lastTs);
+        this._lastTs = now;
+        try {
+          this._update(dtMs);
+        } catch (err) {
+          console.error("백그라운드 틱 오류:", err);
+        }
+      }
+    }, 50);
   }
 
   stop() {
     this.running = false;
     if (this._rafId) cancelAnimationFrame(this._rafId);
+    if (this._bgIntervalId) {
+      clearInterval(this._bgIntervalId);
+      this._bgIntervalId = null;
+    }
+    if (this.p2p) {
+      this.p2p.destroy();
+      this.p2p = null;
+    }
     this.hud.hide();
   }
 
@@ -182,9 +217,6 @@ export class Game {
     const dtMs = Math.min(50, ts - this._lastTs);
     this._lastTs = ts;
 
-    // An uncaught error here would otherwise kill the rAF chain outright —
-    // for the host that means the whole match (bots, every connected guest)
-    // silently freezes. Log and skip the frame instead of dying.
     try {
       this._update(dtMs);
       this._draw();
@@ -221,6 +253,7 @@ export class Game {
     if (this.input.isDown(FIRE_KEY_CODE)) {
       const newBullets = this.player.tryShoot(nowMs, units);
       this.bullets.push(...newBullets);
+      this._recordBulletEvents(newBullets, nowMs);
     }
     if (this.input.wasJustPressed(GRENADE_SLOT.code)) {
       const grenade = this.player.tryThrowGrenade(nowMs);
@@ -239,6 +272,7 @@ export class Game {
         nowMs,
       });
       this.bullets.push(...result.bullets);
+      this._recordBulletEvents(result.bullets, nowMs);
       this.grenades.push(...result.grenades);
     }
 
@@ -313,7 +347,31 @@ export class Game {
 
     if (nowMs - this._lastSnapshotSentAt >= this._snapshotIntervalMs() || this._matchEnded) {
       this._lastSnapshotSentAt = nowMs;
-      this.roomService.sendSnapshot(this._buildSnapshot(nowMs)).catch(() => {});
+      const snap = this._buildSnapshot(nowMs);
+      if (this.p2p) {
+        this.p2p.broadcast(snap);
+      }
+      this.roomService.sendSnapshot(snap).catch(() => {});
+    }
+  }
+
+  _recordBulletEvents(bullets, nowMs) {
+    if (!bullets || bullets.length === 0) return;
+    for (const b of bullets) {
+      this._recentBulletEvents.push({
+        id: b.id,
+        x: Math.round(b.x * 10) / 10,
+        y: Math.round(b.y * 10) / 10,
+        vx: Math.round(b.vx),
+        vy: Math.round(b.vy),
+        speed: b.speed,
+        range: b.range,
+        ownerId: b.ownerId,
+        t: Math.round(nowMs),
+      });
+    }
+    if (this._recentBulletEvents.length > 60) {
+      this._recentBulletEvents = this._recentBulletEvents.slice(-60);
     }
   }
 
@@ -342,6 +400,11 @@ export class Game {
       this._remoteAdapters.set(uid, new RemoteInputAdapter());
       this._medkitSeq.set(uid, 0);
       this._grenadeSeq.set(uid, 0);
+
+      // Connect P2P if not already initiated
+      if (this.p2p && !this.p2p.peers.has(uid)) {
+        this.p2p.connectToGuest(uid);
+      }
     }
 
     for (const uid of [...this.remotePlayers.keys()]) {
@@ -363,7 +426,9 @@ export class Game {
 
       rp.update(dtMs, adapter, this.map.obstacles, units);
       if (adapter.firing) {
-        this.bullets.push(...rp.tryShoot(nowMs, units));
+        const newBullets = rp.tryShoot(nowMs, units);
+        this.bullets.push(...newBullets);
+        this._recordBulletEvents(newBullets, nowMs);
       }
 
       if (rp.falling) continue;
@@ -630,6 +695,7 @@ export class Game {
     }
 
     const bullets = this.bullets.map((b) => ({ x: round1(b.x), y: round1(b.y) }));
+    const bulletEvents = this._recentBulletEvents.filter((e) => nowMs - e.t < 1200);
 
     // Same clock-independence pattern as meleeSwingRemainingMs: send how much
     // longer the burst/fuse has left rather than an absolute host-clock timestamp.
@@ -655,6 +721,7 @@ export class Game {
       bots,
       loot,
       bullets,
+      bulletEvents,
       deathEffects,
       grenades,
       safeZone: {

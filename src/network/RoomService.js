@@ -12,6 +12,7 @@ import {
   onDisconnect,
   runTransaction,
   serverTimestamp,
+  push,
 } from "firebase/database";
 import { db, authReady, getUid } from "./firebase.js";
 import { ROOM_CODE_LENGTH, ROOM_CODE_ALPHABET } from "../utils/constants.js";
@@ -102,6 +103,7 @@ export class RoomService {
   _armPresenceCleanup(code, uid) {
     onDisconnect(ref(db, `rooms/${code}/lobby/${uid}`)).remove();
     onDisconnect(ref(db, `rooms/${code}/input/${uid}`)).remove();
+    onDisconnect(ref(db, `rooms/${code}/signals/${uid}`)).remove();
   }
 
   // Host only: removes a guest from the lobby. Not a ban — they can rejoin
@@ -114,6 +116,7 @@ export class RoomService {
     await Promise.all([
       remove(ref(db, `rooms/${this.roomId}/lobby/${uid}`)).catch(() => {}),
       remove(ref(db, `rooms/${this.roomId}/input/${uid}`)).catch(() => {}),
+      remove(ref(db, `rooms/${this.roomId}/signals/${uid}`)).catch(() => {}),
     ]);
   }
 
@@ -125,7 +128,10 @@ export class RoomService {
   // kickPlayer().
   async clearAllInput() {
     if (!this.isHost || !this.roomId) return;
-    await remove(ref(db, `rooms/${this.roomId}/input`)).catch(() => {});
+    await Promise.all([
+      remove(ref(db, `rooms/${this.roomId}/input`)).catch(() => {}),
+      remove(ref(db, `rooms/${this.roomId}/signals`)).catch(() => {}),
+    ]);
   }
 
   async leaveRoom() {
@@ -135,6 +141,7 @@ export class RoomService {
     if (uid) {
       await remove(ref(db, `rooms/${this.roomId}/lobby/${uid}`)).catch(() => {});
       await remove(ref(db, `rooms/${this.roomId}/input/${uid}`)).catch(() => {});
+      await remove(ref(db, `rooms/${this.roomId}/signals/${uid}`)).catch(() => {});
     }
     this.roomId = null;
     this.isHost = false;
@@ -253,6 +260,70 @@ export class RoomService {
     const uid = getUid();
     if (!uid || !this.roomId) return;
     await update(ref(db, `rooms/${this.roomId}/input/${uid}`), { dropRequest: { x, y } });
+  }
+
+  // WebRTC P2P Signaling: sends an offer, answer, or ICE candidate to a specific peer.
+  async sendSignal(targetUid, signal) {
+    const senderUid = getUid();
+    if (!senderUid || !this.roomId || !targetUid) return;
+    const path = `rooms/${this.roomId}/signals/${targetUid}/${senderUid}`;
+    await push(ref(db, path), {
+      ...signal,
+      senderUid,
+      t: Date.now(),
+    });
+  }
+
+  // Listens for incoming signals addressed to me from any sender.
+  // callback gets { senderUid, signalKey, ...signalData }
+  onSignalsForMe(callback) {
+    const myUid = getUid();
+    if (!myUid || !this.roomId) return () => {};
+    const path = `rooms/${this.roomId}/signals/${myUid}`;
+    const r = ref(db, path);
+
+    // Watch each sender's queue under signals/myUid
+    const senderUnsubs = new Map();
+
+    const onSenderAdded = (senderSnap) => {
+      const senderUid = senderSnap.key;
+      const senderRef = ref(db, `${path}/${senderUid}`);
+      const onSignalItem = (itemSnap) => {
+        const val = itemSnap.val();
+        if (val) {
+          callback({ ...val, senderUid, signalKey: itemSnap.key });
+        }
+      };
+      onChildAdded(senderRef, onSignalItem);
+      senderUnsubs.set(senderUid, () => off(senderRef, "child_added", onSignalItem));
+    };
+
+    const onSenderRemoved = (senderSnap) => {
+      const unsub = senderUnsubs.get(senderSnap.key);
+      if (unsub) {
+        unsub();
+        senderUnsubs.delete(senderSnap.key);
+      }
+    };
+
+    onChildAdded(r, onSenderAdded);
+    onChildRemoved(r, onSenderRemoved);
+
+    const unsubscribe = () => {
+      off(r, "child_added", onSenderAdded);
+      off(r, "child_removed", onSenderRemoved);
+      for (const unsub of senderUnsubs.values()) unsub();
+      senderUnsubs.clear();
+      this._listeners.delete(unsubscribe);
+    };
+    this._listeners.add(unsubscribe);
+    return unsubscribe;
+  }
+
+  async clearMySignals() {
+    const myUid = getUid();
+    if (!myUid || !this.roomId) return;
+    await remove(ref(db, `rooms/${this.roomId}/signals/${myUid}`)).catch(() => {});
   }
 
   // Returns an unsubscribe function. Also tracked in _listeners so leaveRoom()
