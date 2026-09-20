@@ -63,6 +63,7 @@ export class GuestView {
     this.snapshot = null;
     this._remoteRender = new Map(); // uid/botId -> eased {x, y} for smooth rendering
     this.localBullets = new Map(); // id -> Bullet
+    this._seenBulletIds = new Set(); // tracks processed bullet IDs to prevent ghost respawns
     this.p2p = new P2PTransport(roomService, false, myUid);
     this.isWaitingHost = false;
     this._lastSnapshotServerTs = 0;
@@ -152,20 +153,28 @@ export class GuestView {
     const obstacles = this.mapData?.obstacles ?? [];
 
     for (const be of events) {
-      if (!this.localBullets.has(be.id)) {
-        const angle = Math.atan2(be.vy, be.vx);
-        const b = new Bullet(be.x, be.y, angle, be.speed, 0, be.ownerId, be.range);
-        b.id = be.id;
+      // NEVER recreate a bullet that already spawned or completed its flight
+      if (this._seenBulletIds.has(be.id)) continue;
+      this._seenBulletIds.add(be.id);
 
-        // Catch up on flight distance if event arrived slightly late
-        const elapsedMs = Math.max(0, now - (be.t || now));
-        if (elapsedMs > 0 && elapsedMs < 1000) {
-          b.update(elapsedMs, obstacles, []);
-        }
-        if (!b.dead) {
-          this.localBullets.set(be.id, b);
-        }
+      const angle = Math.atan2(be.vy, be.vx);
+      const b = new Bullet(be.x, be.y, angle, be.speed, 0, be.ownerId, be.range);
+      b.id = be.id;
+
+      // Catch up on flight distance if event arrived slightly late
+      const elapsedMs = Math.max(0, now - (be.t || now));
+      if (elapsedMs > 0 && elapsedMs < 1000) {
+        b.update(elapsedMs, obstacles, []);
       }
+      if (!b.dead) {
+        this.localBullets.set(be.id, b);
+      }
+    }
+
+    // Prune seen IDs buffer to prevent unbounded memory growth
+    if (this._seenBulletIds.size > 500) {
+      const arr = [...this._seenBulletIds];
+      this._seenBulletIds = new Set(arr.slice(-250));
     }
   }
 
@@ -299,6 +308,8 @@ export class GuestView {
       desiredWeapon: this.myPlayer.weaponKey,
       medkitSeq: this._medkitSeq,
       grenadeSeq: this._grenadeSeq,
+      x: Math.round(this.myPlayer.x * 10) / 10,
+      y: Math.round(this.myPlayer.y * 10) / 10,
     };
 
     // 1. Send via WebRTC P2P DataChannel if ready (ultra-low latency 10~30ms)
@@ -343,9 +354,9 @@ export class GuestView {
   }
 
   // Health/inventory/ammo are host-decided (crates, damage), so they're synced
-  // in outright. Position is reconciled toward the host's copy while STRICTLY
-  // respecting obstacle walls so lag never causes the player to clip through or
-  // get sucked into structures.
+  // in outright. Position respects client-authoritative movement:
+  // Normal latency drift (< 45px) is NOT pulled back, eliminating rubber-banding!
+  // Walls and large discrepancies are strictly protected.
   _reconcileMyPlayer() {
     const me = this.snapshot?.players?.[this.myUid];
     if (!me || !this.myPlayer) return;
@@ -372,7 +383,7 @@ export class GuestView {
       }
     } else {
       if (driftDist > RECONCILE_SNAP_DISTANCE) {
-        // Snap to host position, then immediately push out of any obstacle walls
+        // Severe desync: snap to host position and resolve any wall collision
         this.myPlayer.x = clamp(me.x, this.myPlayer.radius, WORLD_WIDTH - this.myPlayer.radius);
         this.myPlayer.y = clamp(me.y, this.myPlayer.radius, WORLD_HEIGHT - this.myPlayer.radius);
         for (const rect of obstacles) {
@@ -382,10 +393,10 @@ export class GuestView {
             this.myPlayer.y += push.y;
           }
         }
-      } else if (driftDist > 3) {
-        // Nudge gently toward host, but never push through walls
-        const stepX = (me.x - this.myPlayer.x) * 0.25;
-        const stepY = (me.y - this.myPlayer.y) * 0.25;
+      } else if (driftDist > 45) {
+        // Drift exceeds normal latency margin: softly nudge toward host (without rubber-band snapping)
+        const stepX = (me.x - this.myPlayer.x) * 0.12;
+        const stepY = (me.y - this.myPlayer.y) * 0.12;
         this.myPlayer.x += stepX;
         this.myPlayer.y += stepY;
         this.myPlayer.x = clamp(this.myPlayer.x, this.myPlayer.radius, WORLD_WIDTH - this.myPlayer.radius);
@@ -447,9 +458,15 @@ export class GuestView {
       r = { x: targetX, y: targetY };
       this._remoteRender.set(key, r);
     } else {
-      const factor = Math.min(1, REMOTE_SMOOTHING_PER_SEC * dtSec);
-      r.x += (targetX - r.x) * factor;
-      r.y += (targetY - r.y) * factor;
+      const d = dist(r.x, r.y, targetX, targetY);
+      if (d > 180) {
+        r.x = targetX;
+        r.y = targetY;
+      } else {
+        const factor = Math.min(1, REMOTE_SMOOTHING_PER_SEC * dtSec * 1.3);
+        r.x += (targetX - r.x) * factor;
+        r.y += (targetY - r.y) * factor;
+      }
     }
     return r;
   }

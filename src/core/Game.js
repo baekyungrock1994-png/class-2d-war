@@ -42,7 +42,7 @@ import {
   UNIT_CULL_MARGIN,
   BULLET_RADIUS,
 } from "../utils/constants.js";
-import { dist, randRange, clamp } from "../utils/math.js";
+import { dist, randRange, clamp, circleRectPush } from "../utils/math.js";
 
 const WEAPON_PRIORITY = { fist: 0, pistol: 1, shotgun: 2, rifle: 3 };
 
@@ -425,6 +425,24 @@ export class Game {
       adapter.applyPayload(payload);
 
       rp.update(dtMs, adapter, this.map.obstacles, units);
+
+      // Synchronize host remote player with guest's true reported coordinates
+      // This ensures bullets spawn from the exact location the guest saw on their screen.
+      if (typeof adapter.reportedX === "number" && typeof adapter.reportedY === "number") {
+        const drift = dist(rp.x, rp.y, adapter.reportedX, adapter.reportedY);
+        if (drift > 1 && drift < 250) {
+          rp.x = adapter.reportedX;
+          rp.y = adapter.reportedY;
+          for (const rect of this.map.obstacles) {
+            const push = circleRectPush(rp.x, rp.y, rp.radius, rect);
+            if (push) {
+              rp.x += push.x;
+              rp.y += push.y;
+            }
+          }
+        }
+      }
+
       if (adapter.firing) {
         const newBullets = rp.tryShoot(nowMs, units);
         this.bullets.push(...newBullets);

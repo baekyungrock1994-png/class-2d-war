@@ -7,6 +7,8 @@ export class RemoteInputAdapter {
     this.keys = new Set();
     this.firing = false;
     this.remoteFacing = 0;
+    this.reportedX = null;
+    this.reportedY = null;
     this._justPressed = new Set();
   }
 
@@ -29,5 +31,7 @@ export class RemoteInputAdapter {
 
     this.firing = !!payload.firing;
     if (typeof payload.facing === "number") this.remoteFacing = payload.facing;
+    if (typeof payload.x === "number") this.reportedX = payload.x;
+    if (typeof payload.y === "number") this.reportedY = payload.y;
   }
 }
