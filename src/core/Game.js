@@ -367,7 +367,7 @@ export class Game {
         speed: b.speed,
         range: b.range,
         ownerId: b.ownerId,
-        t: Math.round(nowMs),
+        createdAt: nowMs,
       });
     }
     if (this._recentBulletEvents.length > 60) {
@@ -713,7 +713,19 @@ export class Game {
     }
 
     const bullets = this.bullets.map((b) => ({ x: round1(b.x), y: round1(b.y) }));
-    const bulletEvents = this._recentBulletEvents.filter((e) => nowMs - e.t < 1200);
+    const bulletEvents = this._recentBulletEvents
+      .filter((e) => nowMs - e.createdAt < 1200)
+      .map((e) => ({
+        id: e.id,
+        x: e.x,
+        y: e.y,
+        vx: e.vx,
+        vy: e.vy,
+        speed: e.speed,
+        range: e.range,
+        ownerId: e.ownerId,
+        ageMs: Math.max(0, Math.round(nowMs - e.createdAt)),
+      }));
 
     // Same clock-independence pattern as meleeSwingRemainingMs: send how much
     // longer the burst/fuse has left rather than an absolute host-clock timestamp.

@@ -149,7 +149,6 @@ export class GuestView {
 
   _syncBulletEvents(events) {
     if (!events || !Array.isArray(events)) return;
-    const now = performance.now();
     const obstacles = this.mapData?.obstacles ?? [];
 
     for (const be of events) {
@@ -161,9 +160,9 @@ export class GuestView {
       const b = new Bullet(be.x, be.y, angle, be.speed, 0, be.ownerId, be.range);
       b.id = be.id;
 
-      // Catch up on flight distance if event arrived slightly late
-      const elapsedMs = Math.max(0, now - (be.t || now));
-      if (elapsedMs > 0 && elapsedMs < 1000) {
+      // Catch up on flight distance using clock-independent ageMs from host
+      const elapsedMs = Math.min(250, Math.max(0, be.ageMs || 0));
+      if (elapsedMs > 0) {
         b.update(elapsedMs, obstacles, []);
       }
       if (!b.dead) {
@@ -519,16 +518,6 @@ export class GuestView {
     for (const bullet of this.localBullets.values()) {
       if (!camera.isRoughlyVisible(bullet.x, bullet.y, BULLET_RADIUS)) continue;
       bullet.draw(ctx);
-    }
-    // Fallback: if no local bullets, render snapshot bullets
-    if (this.localBullets.size === 0) {
-      for (const bullet of snap?.bullets || []) {
-        if (!camera.isRoughlyVisible(bullet.x, bullet.y, BULLET_RADIUS)) continue;
-        ctx.fillStyle = "#fff59d";
-        ctx.beginPath();
-        ctx.arc(bullet.x, bullet.y, BULLET_RADIUS, 0, Math.PI * 2);
-        ctx.fill();
-      }
     }
 
     if (this.myPlayer.alive) this.myPlayer.draw(ctx);
