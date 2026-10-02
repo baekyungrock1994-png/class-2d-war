@@ -35,6 +35,12 @@ export class Unit {
     this.lastShotAt = -Infinity;
     this.meleeSwingUntil = 0;
     this.punchHand = 0;
+    // Set true for exactly one frame right when an attack actually lands —
+    // melee swing or ranged shot, off cooldown — regardless of weapon. Game.js
+    // reads and clears it each tick to resolve crate-breaking (see
+    // _tryBreakCrateNear), which needs "did an attack just happen" rather
+    // than "is Space held", since holding Space fires every valid tick.
+    this.justAttacked = false;
 
     // Inventory: weapons found in crates are added here, not auto-equipped —
     // the unit (player via number keys, bots via AI) chooses when to switch.
@@ -62,6 +68,15 @@ export class Unit {
     this.kills = 0;
     this.lastDamagedBy = null;
     this.placement = null;
+
+    // True while this unit is inside the special room (see constants.js's
+    // SPECIAL_ROOM_* and Game.js's teleport handling) — its x/y are the
+    // room's own (offset) coordinates while this is true, so anything that
+    // needs the unit's real surface position for the safe zone should read
+    // specialRoomAnchor instead. Units on opposite sides of this flag can't
+    // see each other (see Game.js/GuestView.js's visibility checks).
+    this.inSpecialRoom = false;
+    this.specialRoomAnchor = null; // {x, y} on the surface, set on entry
   }
 
   get weapon() {
@@ -180,7 +195,7 @@ export class Unit {
 
     const targetX = clamp(this.x + Math.cos(this.facing) * GRENADE_THROW_DISTANCE, 0, WORLD_WIDTH);
     const targetY = clamp(this.y + Math.sin(this.facing) * GRENADE_THROW_DISTANCE, 0, WORLD_HEIGHT);
-    return new Grenade(this.x, this.y, targetX, targetY, this.id, nowMs);
+    return new Grenade(this.x, this.y, targetX, targetY, this.id, nowMs, this.inSpecialRoom);
   }
 
   useMedkit(healAmount) {

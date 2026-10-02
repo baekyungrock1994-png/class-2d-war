@@ -29,6 +29,7 @@ export class DropSelect {
       const scaleY = WORLD_HEIGHT / rect.height;
       this.selected = { x: px * scaleX, y: py * scaleY };
       this.confirmBtn.disabled = false;
+      this._positionConfirmBtn(e.clientX, e.clientY);
       this._draw();
     });
 
@@ -43,6 +44,7 @@ export class DropSelect {
     this.safeZone = safeZone;
     this.selected = null;
     this.confirmBtn.disabled = true;
+    this.confirmBtn.classList.add("hidden");
     this.screen.classList.remove("hidden");
     this._draw();
     this._startCountdown();
@@ -50,7 +52,23 @@ export class DropSelect {
 
   close() {
     this.screen.classList.add("hidden");
+    this.confirmBtn.classList.add("hidden");
     this._stopCountdown();
+  }
+
+  // Moves the "낙하 시작" button right next to wherever the player just
+  // clicked, instead of leaving it in its static spot below the map — on a
+  // small/low-res laptop screen that static spot can fall off-viewport.
+  _positionConfirmBtn(clientX, clientY) {
+    this.confirmBtn.classList.remove("hidden");
+    const btnRect = this.confirmBtn.getBoundingClientRect();
+    const margin = 14;
+    let left = clientX + margin;
+    let top = clientY + margin;
+    if (left + btnRect.width > window.innerWidth) left = clientX - btnRect.width - margin;
+    if (top + btnRect.height > window.innerHeight) top = clientY - btnRect.height - margin;
+    this.confirmBtn.style.left = `${Math.max(4, left)}px`;
+    this.confirmBtn.style.top = `${Math.max(4, top)}px`;
   }
 
   onConfirm(callback) {
@@ -121,6 +139,28 @@ export class DropSelect {
         ctx.ellipse(bush.x * scaleX, bush.y * scaleY, bush.radius * scaleX, bush.radius * scaleY, 0, 0, Math.PI * 2);
         ctx.fill();
       }
+    }
+
+    // Military bases: dashed amber ring + label, so players who want
+    // shotgun/rifle/grenade-heavy loot can pick a drop point inside one.
+    if (this.map.militaryBases) {
+      ctx.save();
+      ctx.strokeStyle = "#e0a800";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 5]);
+      ctx.fillStyle = "#ffd36b";
+      ctx.font = "bold 13px 'Segoe UI', sans-serif";
+      ctx.textAlign = "center";
+      for (const base of this.map.militaryBases) {
+        const bx = base.x * scaleX;
+        const by = base.y * scaleY;
+        const br = base.radius * scaleX;
+        ctx.beginPath();
+        ctx.arc(bx, by, br, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillText("군사기지", bx, by - br - 6);
+      }
+      ctx.restore();
     }
 
     ctx.strokeStyle = "#7ec8ff";

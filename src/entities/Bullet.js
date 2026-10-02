@@ -4,7 +4,7 @@ import { segmentIntersectsRect, dist } from "../utils/math.js";
 let nextId = 1;
 
 export class Bullet {
-  constructor(x, y, angle, speed, damage, ownerId, range = Infinity) {
+  constructor(x, y, angle, speed, damage, ownerId, range = Infinity, inSpecialRoom = false) {
     this.id = `bullet_${nextId++}`;
     this.x = x;
     this.y = y;
@@ -15,6 +15,11 @@ export class Bullet {
     this.traveled = 0;
     this.damage = damage;
     this.ownerId = ownerId;
+    // Which "layer" this bullet was fired from — see constants.js's
+    // SPECIAL_ROOM_* comment. A bullet fired on the surface can't hit
+    // someone down in the special room even at the same raw (x, y), and
+    // vice versa.
+    this.inSpecialRoom = inSpecialRoom;
     this.ageMs = 0;
     this.dead = false;
   }
@@ -42,6 +47,7 @@ export class Bullet {
 
     for (const unit of units) {
       if (!unit.alive || unit.id === this.ownerId || unit.falling) continue;
+      if (!!unit.inSpecialRoom !== !!this.inSpecialRoom) continue;
       if (dist(this.x, this.y, unit.x, unit.y) <= unit.radius + BULLET_RADIUS) {
         unit.takeDamage(this.damage, this.ownerId);
         this.dead = true;

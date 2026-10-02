@@ -97,8 +97,57 @@ export const GRENADE_EXPLOSION_VISUAL_RADIUS = 130;
 export const GRENADE_EXPLOSION_EFFECT_MS = 700;
 export const GRENADE_EXPLOSION_DEBRIS_COUNT = 16;
 
-export const CRATE_INTERACT_RADIUS = 30;
-export const CRATE_OPEN_MS = 2500;
+// Crates are broken open by attacking them (any weapon, not just fists) —
+// see Game.js's _tryBreakCrateNear — not stood-next-to-and-waited-out.
+// CRATE_HP is deliberately divisible by each weapon's CRATE_DAMAGE_PER_HIT
+// below so it pops on exactly the intended number of hits, no partial-hit
+// ambiguity: fist 5, pistol 4, rifle 3, shotgun 2. A weapon's crate damage is
+// its own separate number from its damage-to-units — shotgun's 6-pellet
+// spread in particular makes per-pellet unit damage a bad fit for "2 shots
+// breaks a crate", so this is resolved as one flat hit per trigger pull
+// (see justAttacked) rather than simulating each pellet's own collision.
+export const CRATE_HP = 60;
+export const CRATE_DAMAGE_PER_HIT = { fist: 12, pistol: 15, rifle: 20, shotgun: 30 };
+export const CRATE_MELEE_CONE_RADIANS = Math.PI / 2;
+// A grenade landing within its normal damage radius destroys any crate there
+// outright (one grenade = one crate, full stop), rather than chipping HP.
+
+// "군사기지" (military base) POIs: high-value weapon/grenade loot, camo
+// containers that hide like a bush, and a barbed-wire perimeter so the zone
+// reads as visually distinct from open field. Two of these split the map so
+// players don't all beeline for the same spot.
+export const MILITARY_BASE_COUNT = 2;
+export const MILITARY_BASE_RADIUS = 420;
+export const MILITARY_BASE_MIN_SEPARATION = 1600; // keep the two bases apart
+export const MILITARY_BASE_EDGE_MARGIN = 550; // keep bases off the world edge
+export const MILITARY_CRATES_PER_BASE = 7;
+export const MILITARY_CONTAINER_COUNT = 5; // standalone hide-capable containers per base
+export const MILITARY_FENCE_POST_GAP = 46; // px between barbed-wire posts around the perimeter
+
+// A bonus loot room reached through a single hatch on the surface, sitting
+// directly beneath it — a small, fixed local offset in Y, not some far-off
+// disconnected coordinate, so stepping in feels like "go underground right
+// here" rather than teleporting somewhere unrecognizable. Walking back onto
+// the same door (now the gap in the room's own ceiling) sends a unit back
+// out to the exact surface spot they entered from.
+//
+// Its footprint is carved out of the rest of the map's generation (see
+// GameMap.js) so nothing else overlaps it, but it otherwise shares the
+// normal 0..WORLD_WIDTH/HEIGHT coordinate space with the surface — which
+// means anything that resolves combat by distance/range (auto-aim, melee,
+// bullets, grenades) has to also check both sides agree on inSpecialRoom,
+// or a surface player standing near the door could reach into the room
+// (and vice versa). Its safe-zone damage is judged by the door's own
+// surface coordinates, not the room's, since being underground doesn't
+// make the zone stop applying to you.
+export const SPECIAL_ROOM_SIZE = 260; // square interior, in px
+export const SPECIAL_ROOM_LOCAL_OFFSET_Y = 300; // how far below the door the room sits
+export const SPECIAL_ROOM_WALL_THICKNESS = 24;
+export const SPECIAL_ROOM_DOOR_GAP = 70; // opening in the room's ceiling, under the door
+export const SPECIAL_ROOM_CRATE_COUNT = 6;
+export const SPECIAL_ROOM_HATCH_RADIUS = 34; // walk within this of the door to trigger teleport
+// Camera.follow()'s bounds override while inside the room — see Camera.js.
+export const SPECIAL_ROOM_MARGIN = 60;
 
 export const DROP_SELECT_TIMEOUT_SEC = 10;
 
@@ -108,14 +157,16 @@ export const DEATH_EFFECT_DEBRIS_COUNT = 8;
 export const DEATH_LOOT_SCATTER_RANGE = [16, 46]; // px from the death point
 export const DEATH_MEDKIT_DROP_CAP = 3;
 
+// Every hold/shrink duration doubled from the original pacing so a match
+// takes roughly twice as long to play out.
 export const ZONE_PHASES = [
-  { holdMs: 12000, shrinkMs: 14000, radiusRatio: 1.0 },
-  { holdMs: 10000, shrinkMs: 12000, radiusRatio: 0.68 },
-  { holdMs: 9000, shrinkMs: 10000, radiusRatio: 0.45 },
-  { holdMs: 8000, shrinkMs: 9000, radiusRatio: 0.28 },
-  { holdMs: 7000, shrinkMs: 8000, radiusRatio: 0.15 },
-  { holdMs: 6000, shrinkMs: 7000, radiusRatio: 0.06 },
-  { holdMs: 5000, shrinkMs: 5000, radiusRatio: 0.0 },
+  { holdMs: 24000, shrinkMs: 28000, radiusRatio: 1.0 },
+  { holdMs: 20000, shrinkMs: 24000, radiusRatio: 0.68 },
+  { holdMs: 18000, shrinkMs: 20000, radiusRatio: 0.45 },
+  { holdMs: 16000, shrinkMs: 18000, radiusRatio: 0.28 },
+  { holdMs: 14000, shrinkMs: 16000, radiusRatio: 0.15 },
+  { holdMs: 12000, shrinkMs: 14000, radiusRatio: 0.06 },
+  { holdMs: 10000, shrinkMs: 10000, radiusRatio: 0.0 },
 ];
 
 export const ZONE_DAMAGE_PER_SEC = 4;

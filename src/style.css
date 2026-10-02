@@ -88,6 +88,14 @@ html, body {
   max-height: 80vmin;
 }
 
+/* Floats next to the cursor the moment a drop point is clicked (set via JS
+   left/top), instead of sitting in normal flow below the map where a short
+   laptop viewport can push it off-screen. */
+#drop-confirm-btn {
+  position: fixed;
+  z-index: 20;
+}
+
 #hud {
   position: absolute;
   top: 16px;

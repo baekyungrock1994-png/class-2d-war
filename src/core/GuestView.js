@@ -1,7 +1,7 @@
 import { Camera } from "./Camera.js";
 import { Input } from "./Input.js";
 import { HUD } from "../ui/HUD.js";
-import { GameMap, isHiddenInBushes } from "../world/GameMap.js";
+import { GameMap, isHiddenInBushes, deriveHideContainers, obstaclesForUnit } from "../world/GameMap.js";
 import { SafeZone } from "../world/SafeZone.js";
 import { drawLoot } from "../world/Loot.js";
 import { drawUnit } from "../render/drawUnit.js";
@@ -25,6 +25,7 @@ import {
   RECONCILE_SNAP_DISTANCE,
   SPECTATOR_SPEED,
   UNIT_CULL_MARGIN,
+  SPECIAL_ROOM_HATCH_RADIUS,
 } from "../utils/constants.js";
 import { dist, clamp, circleRectPush } from "../utils/math.js";
 
@@ -100,6 +101,13 @@ export class GuestView {
 
   setMap(mapData) {
     this.mapData = mapData;
+    // Derived once here rather than every hide-check/collision call — same
+    // data the host computes in GameMap's constructor, just derived from the
+    // broadcast obstacles instead of generated locally.
+    this.mapData.hideContainers = deriveHideContainers(mapData.obstacles || []);
+    const obstacles = mapData.obstacles || [];
+    this.mapData.surfaceObstacles = obstacles.filter((o) => o.kind !== "milContainer" && o.kind !== "bunkerWall");
+    this.mapData.bunkerObstacles = obstacles.filter((o) => o.kind === "bunkerWall");
   }
 
   // Starts falling immediately at the chosen point — no waiting on the host to
@@ -148,8 +156,7 @@ export class GuestView {
   }
 
   _syncBulletEvents(events) {
-    if (!events || !Array.isArray(events)) return;
-    const obstacles = this.mapData?.obstacles ?? [];
+    if (!events || !Array.isArray(events) || !this.mapData) return;
 
     for (const be of events) {
       // NEVER recreate a bullet that already spawned or completed its flight
@@ -157,8 +164,9 @@ export class GuestView {
       this._seenBulletIds.add(be.id);
 
       const angle = Math.atan2(be.vy, be.vx);
-      const b = new Bullet(be.x, be.y, angle, be.speed, 0, be.ownerId, be.range);
+      const b = new Bullet(be.x, be.y, angle, be.speed, 0, be.ownerId, be.range, be.inSpecialRoom);
       b.id = be.id;
+      const obstacles = obstaclesForUnit(this.mapData, b);
 
       // Catch up on flight distance using clock-independent ageMs from host
       const elapsedMs = Math.min(250, Math.max(0, be.ageMs || 0));
@@ -216,9 +224,9 @@ export class GuestView {
   }
 
   _updateLocalBullets(dtMs) {
-    const obstacles = this.mapData?.obstacles ?? [];
+    if (!this.mapData) return;
     for (const [id, bullet] of this.localBullets) {
-      bullet.update(dtMs, obstacles, []);
+      bullet.update(dtMs, obstaclesForUnit(this.mapData, bullet), []);
       if (bullet.dead) {
         this.localBullets.delete(id);
       }
@@ -247,13 +255,45 @@ export class GuestView {
       this._updateSpectatorCamera(dtMs);
       return;
     }
-    this.myPlayer.update(dtMs, this.input, this.mapData?.obstacles ?? [], this._autoAimUnits());
+    this.myPlayer.update(
+      dtMs,
+      this.input,
+      this.mapData ? obstaclesForUnit(this.mapData, this.myPlayer) : [],
+      this._autoAimUnits(),
+      this._autoAimCrates()
+    );
     if (this.input.isDown(FIRE_KEY_CODE)) this.myPlayer.tryShoot(performance.now(), []);
+    this._checkSpecialRoomTeleport();
 
     // Computed locally (not synced from the snapshot) so the fade-when-hidden
     // feedback is instant, same as the host sees for its own player.
     this.myPlayer.hidden =
-      !this.myPlayer.falling && isHiddenInBushes(this.myPlayer.x, this.myPlayer.y, this.mapData?.bushes ?? []);
+      !this.myPlayer.falling &&
+      isHiddenInBushes(this.myPlayer.x, this.myPlayer.y, this.mapData?.bushes ?? [], this.mapData?.hideContainers ?? []);
+  }
+
+  // Mirrors Game.js's _handleSpecialRoomTeleports for just this player, so
+  // walking onto the door feels instant instead of waiting on a host
+  // round-trip — the host runs the same check independently off this
+  // player's reported x/y and will agree shortly after (see
+  // _reconcileMyPlayer's localAheadOfHost handling).
+  _checkSpecialRoomTeleport() {
+    const room = this.mapData?.specialRoom;
+    if (!room) return;
+
+    if (!this.myPlayer.inSpecialRoom) {
+      if (dist(this.myPlayer.x, this.myPlayer.y, room.door.x, room.door.y) <= SPECIAL_ROOM_HATCH_RADIUS) {
+        this.myPlayer.inSpecialRoom = true;
+        this.myPlayer.specialRoomAnchor = { x: room.door.x, y: room.door.y };
+        this.myPlayer.x = room.spawn.x;
+        this.myPlayer.y = room.spawn.y;
+      }
+    } else if (dist(this.myPlayer.x, this.myPlayer.y, room.exit.x, room.exit.y) <= SPECIAL_ROOM_HATCH_RADIUS) {
+      this.myPlayer.inSpecialRoom = false;
+      this.myPlayer.specialRoomAnchor = null;
+      this.myPlayer.x = room.door.x;
+      this.myPlayer.y = room.door.y + 60;
+    }
   }
 
   // Auto-aim needs a "who's nearby" list, same shape the host's own auto-aim
@@ -267,6 +307,13 @@ export class GuestView {
       if (uid !== this.myUid) units.push(p);
     }
     return units;
+  }
+
+  // Same idea for crates — the snapshot's loot entries already have x/y/
+  // collected, which is all findNearestCrate needs.
+  _autoAimCrates() {
+    if (!this.snapshot) return [];
+    return Object.values(this.snapshot.loot || {});
   }
 
   // Free-look camera pan once dead, so this player can watch the rest of the
@@ -360,6 +407,14 @@ export class GuestView {
     const me = this.snapshot?.players?.[this.myUid];
     if (!me || !this.myPlayer) return;
 
+    // If this player already predicted its own hatch teleport locally (see
+    // _checkSpecialRoomTeleport) but this snapshot is still from before the
+    // host caught up, trust the local prediction fully rather than yanking
+    // position back to where it was before the jump — the host will confirm
+    // within a snapshot or two, at which point this stops being true and
+    // normal reconciliation (which will barely need to do anything) resumes.
+    const localAheadOfHost = this.myPlayer.inSpecialRoom !== me.inSpecialRoom;
+
     this.myPlayer.health = me.health;
     this.myPlayer.alive = me.alive;
     this.myPlayer.medkitCount = me.medkitCount;
@@ -372,8 +427,18 @@ export class GuestView {
       this.myPlayer.weaponAmmo[me.weaponKey] = { mag: me.mag, reserve: me.reserveAmmo };
     }
 
-    const obstacles = this.mapData?.obstacles ?? [];
+    if (localAheadOfHost) return;
+    this.myPlayer.inSpecialRoom = me.inSpecialRoom;
+
+    const obstacles = this.mapData ? obstaclesForUnit(this.mapData, this.myPlayer) : [];
     const driftDist = dist(this.myPlayer.x, this.myPlayer.y, me.x, me.y);
+    // The special room can sit outside the normal WORLD_WIDTH/HEIGHT bounds
+    // near a map edge (see constants.js's SPECIAL_ROOM_*) — clamping to them
+    // while inside it could shove the player into a wall.
+    const clampToWorld = (x, y) =>
+      me.inSpecialRoom
+        ? { x, y }
+        : { x: clamp(x, this.myPlayer.radius, WORLD_WIDTH - this.myPlayer.radius), y: clamp(y, this.myPlayer.radius, WORLD_HEIGHT - this.myPlayer.radius) };
 
     if (this.myPlayer.falling) {
       if (driftDist > RECONCILE_SNAP_DISTANCE) {
@@ -383,8 +448,7 @@ export class GuestView {
     } else {
       if (driftDist > RECONCILE_SNAP_DISTANCE) {
         // Severe desync: snap to host position and resolve any wall collision
-        this.myPlayer.x = clamp(me.x, this.myPlayer.radius, WORLD_WIDTH - this.myPlayer.radius);
-        this.myPlayer.y = clamp(me.y, this.myPlayer.radius, WORLD_HEIGHT - this.myPlayer.radius);
+        ({ x: this.myPlayer.x, y: this.myPlayer.y } = clampToWorld(me.x, me.y));
         for (const rect of obstacles) {
           const push = circleRectPush(this.myPlayer.x, this.myPlayer.y, this.myPlayer.radius, rect);
           if (push) {
@@ -396,10 +460,7 @@ export class GuestView {
         // Drift exceeds normal latency margin: softly nudge toward host (without rubber-band snapping)
         const stepX = (me.x - this.myPlayer.x) * 0.12;
         const stepY = (me.y - this.myPlayer.y) * 0.12;
-        this.myPlayer.x += stepX;
-        this.myPlayer.y += stepY;
-        this.myPlayer.x = clamp(this.myPlayer.x, this.myPlayer.radius, WORLD_WIDTH - this.myPlayer.radius);
-        this.myPlayer.y = clamp(this.myPlayer.y, this.myPlayer.radius, WORLD_HEIGHT - this.myPlayer.radius);
+        ({ x: this.myPlayer.x, y: this.myPlayer.y } = clampToWorld(this.myPlayer.x + stepX, this.myPlayer.y + stepY));
 
         for (const rect of obstacles) {
           const push = circleRectPush(this.myPlayer.x, this.myPlayer.y, this.myPlayer.radius, rect);
@@ -417,7 +478,7 @@ export class GuestView {
     const me = this.snapshot?.players?.[this.myUid];
     if (me && !me.alive) {
       this._localDeathNotified = true;
-      this.spectator = { x: this.myPlayer.x, y: this.myPlayer.y };
+      this.spectator = { x: this.myPlayer.x, y: this.myPlayer.y, inSpecialRoom: this.myPlayer.inSpecialRoom };
       if (this.onLocalDeath) this.onLocalDeath();
     }
   }
@@ -471,9 +532,10 @@ export class GuestView {
   }
 
   _visibleToMe(unit) {
-    if (!unit.hidden) return true;
     const viewer = this.myPlayer.alive ? this.myPlayer : this.spectator;
     if (!viewer) return false;
+    if (!!unit.inSpecialRoom !== !!viewer.inSpecialRoom) return false;
+    if (!unit.hidden) return true;
     return dist(viewer.x, viewer.y, unit.x, unit.y) <= HIDDEN_REVEAL_RANGE;
   }
 
@@ -488,19 +550,22 @@ export class GuestView {
 
     if (!this.myPlayer || !this.mapData) return;
 
+    const viewerInSpecialRoom = this.myPlayer.alive ? this.myPlayer.inSpecialRoom : !!this.spectator?.inSpecialRoom;
+    const roomBounds = this.mapData.specialRoom?.cameraBounds;
+
     if (this.myPlayer.alive) {
-      camera.follow(this.myPlayer);
+      camera.follow(this.myPlayer, this.myPlayer.inSpecialRoom ? roomBounds : undefined);
     } else if (this.spectator) {
-      camera.follow(this.spectator);
+      camera.follow(this.spectator, this.spectator.inSpecialRoom ? roomBounds : undefined);
     }
 
     ctx.save();
     ctx.scale(camera.zoom, camera.zoom);
     ctx.translate(-camera.x, -camera.y);
 
-    GameMap.prototype.draw.call(this.mapData, ctx, camera);
-    drawLoot(ctx, camera, Object.values(snap?.loot || {}));
-    SafeZone.prototype.draw.call(snap?.safeZone || FULL_MAP_ZONE, ctx, camera);
+    GameMap.prototype.draw.call(this.mapData, ctx, camera, viewerInSpecialRoom);
+    drawLoot(ctx, camera, Object.values(snap?.loot || {}), viewerInSpecialRoom);
+    if (!viewerInSpecialRoom) SafeZone.prototype.draw.call(snap?.safeZone || FULL_MAP_ZONE, ctx, camera);
 
     for (const [id, bot] of Object.entries(snap?.bots || {})) {
       if (!bot.alive || !this._visibleToMe(bot)) continue;
@@ -516,14 +581,17 @@ export class GuestView {
     }
     // Render smooth local bullets (60fps simulation from synchronized fire events)
     for (const bullet of this.localBullets.values()) {
+      if (!!bullet.inSpecialRoom !== viewerInSpecialRoom) continue;
       if (!camera.isRoughlyVisible(bullet.x, bullet.y, BULLET_RADIUS)) continue;
       bullet.draw(ctx);
     }
 
     if (this.myPlayer.alive) this.myPlayer.draw(ctx);
 
-    drawGrenades(ctx, snap?.grenades || [], performance.now());
-    drawDeathEffects(ctx, snap?.deathEffects || [], performance.now());
+    const grenadesInView = (snap?.grenades || []).filter((g) => !!g.inSpecialRoom === viewerInSpecialRoom);
+    const deathEffectsInView = (snap?.deathEffects || []).filter((e) => !!e.inSpecialRoom === viewerInSpecialRoom);
+    drawGrenades(ctx, grenadesInView, performance.now());
+    drawDeathEffects(ctx, deathEffectsInView, performance.now());
 
     ctx.restore();
 

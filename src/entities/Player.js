@@ -1,7 +1,7 @@
 import { Unit } from "./Unit.js";
 import { Bullet } from "./Bullet.js";
 import { findMeleeTarget } from "./melee.js";
-import { findNearestTarget } from "./targeting.js";
+import { findNearestTarget, findNearestCrate } from "./targeting.js";
 import {
   PLAYER_SPEED,
   WORLD_WIDTH,
@@ -18,7 +18,7 @@ export class Player extends Unit {
     super(x, y, true);
   }
 
-  update(dtMs, input, obstacles, units = []) {
+  update(dtMs, input, obstacles, units = [], crates = []) {
     if (!this.alive) return;
 
     const dtSec = dtMs / 1000;
@@ -49,10 +49,16 @@ export class Player extends Unit {
       this.facing = input.remoteFacing;
     } else {
       const target = findNearestTarget(this, units, AUTO_AIM_RANGE);
+      const crateTarget = !target ? findNearestCrate(this, crates, AUTO_AIM_RANGE) : null;
       if (target) {
         this.facing = angleTo(this.x, this.y, target.x, target.y);
+      } else if (crateTarget) {
+        // No enemy in range — an unbroken crate takes priority over just
+        // facing our own movement, so walking toward loot already lines up
+        // the attack that'll break it open.
+        this.facing = angleTo(this.x, this.y, crateTarget.x, crateTarget.y);
       } else if (dx !== 0 || dy !== 0) {
-        // No one in range — face the way we're walking instead of freezing
+        // Nothing to aim at — face the way we're walking instead of freezing
         // on whatever direction we last shot.
         this.facing = Math.atan2(dy, dx);
       }
@@ -84,6 +90,7 @@ export class Player extends Unit {
   tryShoot(nowMs, units) {
     if (!this.canShoot(nowMs)) return [];
     this.consumeShot(nowMs);
+    this.justAttacked = true;
 
     const weapon = this.weapon;
 
@@ -98,7 +105,9 @@ export class Player extends Unit {
     const pelletCount = weapon.pellets ?? 1;
     for (let i = 0; i < pelletCount; i++) {
       const spread = randRange(-weapon.spread, weapon.spread);
-      bullets.push(new Bullet(this.x, this.y, this.facing + spread, weapon.bulletSpeed, weapon.damage, this.id, weapon.range));
+      bullets.push(
+        new Bullet(this.x, this.y, this.facing + spread, weapon.bulletSpeed, weapon.damage, this.id, weapon.range, this.inSpecialRoom)
+      );
     }
     return bullets;
   }

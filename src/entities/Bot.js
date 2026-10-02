@@ -101,6 +101,7 @@ export class Bot extends Unit {
 
         if (canAttack && this.canShoot(nowMs) && Math.random() < 0.85) {
           this.consumeShot(nowMs);
+          this.justAttacked = true;
           if (weapon.melee) {
             this.triggerMeleeSwing(nowMs);
             target.takeDamage(weapon.damage, this.id);
@@ -108,7 +109,9 @@ export class Bot extends Unit {
             const pelletCount = weapon.pellets ?? 1;
             for (let i = 0; i < pelletCount; i++) {
               const spread = randRange(-weapon.spread * 2.2, weapon.spread * 2.2);
-              bulletsOut.push(new Bullet(this.x, this.y, this.facing + spread, weapon.bulletSpeed, weapon.damage, this.id, weapon.range));
+              bulletsOut.push(
+                new Bullet(this.x, this.y, this.facing + spread, weapon.bulletSpeed, weapon.damage, this.id, weapon.range, this.inSpecialRoom)
+              );
             }
           }
         } else if (!weapon.melee && this.mag <= 0) {

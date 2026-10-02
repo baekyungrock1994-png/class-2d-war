@@ -1,8 +1,9 @@
-import { GameMap, isHiddenInBushes } from "../world/GameMap.js";
+import { GameMap, isHiddenInBushes, obstaclesForUnit } from "../world/GameMap.js";
 import { SafeZone } from "../world/SafeZone.js";
 import { generateLoot, drawLoot } from "../world/Loot.js";
 import { Player } from "../entities/Player.js";
 import { Bot } from "../entities/Bot.js";
+import { findMeleeCrateTarget } from "../entities/melee.js";
 import { Camera } from "./Camera.js";
 import { Input } from "./Input.js";
 import { HUD } from "../ui/HUD.js";
@@ -14,8 +15,10 @@ import { drawGrenades } from "../render/drawGrenades.js";
 import {
   BOT_COUNT,
   PLAYER_RADIUS,
-  CRATE_INTERACT_RADIUS,
-  CRATE_OPEN_MS,
+  CRATE_HP,
+  CRATE_DAMAGE_PER_HIT,
+  CRATE_MELEE_CONE_RADIANS,
+  SPECIAL_ROOM_HATCH_RADIUS,
   ZONE_DAMAGE_PER_SEC,
   WEAPONS,
   MEDKIT_HEAL_AMOUNT,
@@ -132,40 +135,85 @@ export class Game {
       this.p2p = null;
     }
 
+    // Bumped on every call so a restart's async setup below can tell whether
+    // it's been superseded by an even newer prepareMatch() call before it
+    // finishes — without this guard, two overlapping "다시하기" clicks (or a
+    // restart fired while the previous round's async cleanup was still in
+    // flight) could leave a stale callback writing into the new round's state.
+    this._matchGeneration = (this._matchGeneration ?? 0) + 1;
+    const generation = this._matchGeneration;
+
     if (this.mode === "host") {
       this.hostUid = getUid();
-      this.p2p = new P2PTransport(this.roomService, true, this.hostUid);
-      this.p2p.start();
-      this.p2p.onData = (guestUid, payload) => {
-        this._latestGuestInputs[guestUid] = payload;
-      };
+      const p2p = new P2PTransport(this.roomService, true, this.hostUid);
+      this.p2p = p2p;
 
-      const offInput = this.roomService.onAllInput((val) => {
-        this._latestGuestInputs = val || {};
-      });
-      const offLobby = this.roomService.onLobby((val) => {
-        this._latestLobby = val || {};
-        // Automatically establish WebRTC P2P connection to new guests
-        for (const uid of Object.keys(this._latestLobby)) {
-          if (uid !== this.hostUid && !this.p2p.peers.has(uid)) {
-            this.p2p.connectToGuest(uid);
+      // Wipe the previous round's leftover input/signals (in particular any
+      // stale dropRequest, which would otherwise instantly replay as this
+      // round's drop the moment input processing resumes) *before* starting
+      // the new P2P transport or subscribing to lobby/signals — otherwise a
+      // freshly-sent WebRTC offer (triggered by the lobby listener below)
+      // could race a still-in-flight remove() and get deleted right after
+      // being sent, or a stale signal left over from the previous round's
+      // handshake could get fed into the new P2PTransport instance.
+      this.roomService.clearAllInput().finally(() => {
+        if (this._matchGeneration !== generation || this.p2p !== p2p) return; // superseded by a later restart
+
+        p2p.start();
+        // Merge, don't replace: a P2P payload only ever carries the regular
+        // per-frame movement/aim fields (see GuestView._sendInputThrottled) —
+        // `dropRequest` arrives separately over Firebase (requestDrop()). On a
+        // same-room restart ("다시하기") the P2P channel often reconnects and
+        // starts streaming again *faster* than Firebase propagates the click,
+        // so a naive overwrite here would wipe out a guest's just-arrived
+        // dropRequest before _processGuestDropRequests() ever sees it — that
+        // guest would keep playing locally (their own GuestView already
+        // started) while never appearing on the host or anyone else's screen.
+        p2p.onData = (guestUid, payload) => {
+          this._latestGuestInputs[guestUid] = { ...this._latestGuestInputs[guestUid], ...payload };
+        };
+
+        const offInput = this.roomService.onAllInput((val) => {
+          // Same merge reasoning as above, in the other direction: Firebase's
+          // view is the source of truth for dropRequest, but a stale P2P-only
+          // payload already sitting under a key here (e.g. a field Firebase
+          // hasn't re-sent yet because that guest's node didn't just change)
+          // shouldn't be dropped just because some *other* guest's input changed.
+          const merged = { ...this._latestGuestInputs };
+          for (const [uid, v] of Object.entries(val || {})) {
+            merged[uid] = { ...merged[uid], ...v };
           }
-        }
-      });
-      this._unsubscribeHostListeners = () => {
-        offInput();
-        offLobby();
-      };
+          this._latestGuestInputs = merged;
+        });
+        const offLobby = this.roomService.onLobby((val) => {
+          this._latestLobby = val || {};
+          // Automatically establish WebRTC P2P connection to new guests
+          for (const uid of Object.keys(this._latestLobby)) {
+            if (uid !== this.hostUid && !p2p.peers.has(uid)) {
+              p2p.connectToGuest(uid);
+            }
+          }
+        });
+        this._unsubscribeHostListeners = () => {
+          offInput();
+          offLobby();
+        };
 
-      this.roomService.clearAllInput();
-      this.roomService.startMatch(this._serializeMap()).catch((err) => {
-        console.error("매치 시작 정보를 공유하지 못했습니다:", err);
+        this.roomService.startMatch(this._serializeMap()).catch((err) => {
+          console.error("매치 시작 정보를 공유하지 못했습니다:", err);
+        });
       });
     }
   }
 
   _serializeMap() {
-    return { obstacles: this.map.obstacles, terrainPatches: this.map.terrainPatches, bushes: this.map.bushes };
+    return {
+      obstacles: this.map.obstacles,
+      terrainPatches: this.map.terrainPatches,
+      bushes: this.map.bushes,
+      militaryBases: this.map.militaryBases,
+      specialRoom: this.map.specialRoom,
+    };
   }
 
   // Spawns the player at the chosen drop point, parachuting in, and starts the loop.
@@ -239,7 +287,8 @@ export class Game {
 
     const units = this._allUnits();
     for (const unit of units) {
-      unit.hidden = unit.alive && !unit.falling && isHiddenInBushes(unit.x, unit.y, this.map.bushes);
+      unit.hidden =
+        unit.alive && !unit.falling && isHiddenInBushes(unit.x, unit.y, this.map.bushes, this.map.hideContainers);
     }
 
     // Snapshot who's alive before this frame's damage resolves, so we can spot
@@ -249,11 +298,15 @@ export class Game {
 
     this.safeZone.update(dtMs);
 
-    this.player.update(dtMs, this.input, this.map.obstacles, units);
+    this.player.update(dtMs, this.input, obstaclesForUnit(this.map, this.player), units, this.loot);
     if (this.input.isDown(FIRE_KEY_CODE)) {
       const newBullets = this.player.tryShoot(nowMs, units);
       this.bullets.push(...newBullets);
       this._recordBulletEvents(newBullets, nowMs);
+    }
+    if (this.player.justAttacked) {
+      this.player.justAttacked = false;
+      this._tryBreakCrateNear(this.player);
     }
     if (this.input.wasJustPressed(GRENADE_SLOT.code)) {
       const grenade = this.player.tryThrowGrenade(nowMs);
@@ -268,16 +321,20 @@ export class Game {
         map: this.map,
         safeZone: this.safeZone,
         units,
-        obstacles: this.map.obstacles,
+        obstacles: obstaclesForUnit(this.map, bot),
         nowMs,
       });
       this.bullets.push(...result.bullets);
       this._recordBulletEvents(result.bullets, nowMs);
       this.grenades.push(...result.grenades);
+      if (bot.justAttacked) {
+        bot.justAttacked = false;
+        this._tryBreakCrateNear(bot);
+      }
     }
 
     for (const bullet of this.bullets) {
-      bullet.update(dtMs, this.map.obstacles, units);
+      bullet.update(dtMs, obstaclesForUnit(this.map, bullet), units);
     }
     this.bullets = this.bullets.filter((b) => !b.dead);
 
@@ -292,7 +349,12 @@ export class Game {
 
     for (const unit of units) {
       if (!unit.alive || unit.falling) continue;
-      if (this.safeZone.isOutside(unit.x, unit.y)) {
+      // A unit inside the special room is judged by the hatch's surface
+      // coordinates for zone purposes, not its own (offset) position — see
+      // constants.js's SPECIAL_ROOM_* comment.
+      const zx = unit.inSpecialRoom && unit.specialRoomAnchor ? unit.specialRoomAnchor.x : unit.x;
+      const zy = unit.inSpecialRoom && unit.specialRoomAnchor ? unit.specialRoomAnchor.y : unit.y;
+      if (this.safeZone.isOutside(zx, zy)) {
         unit.takeDamage((ZONE_DAMAGE_PER_SEC * dtMs) / 1000);
       }
     }
@@ -302,16 +364,18 @@ export class Game {
     }
     this.deathEffects = this.deathEffects.filter((e) => e.expiresAt > nowMs);
 
-    this._handleCrateOpening(dtMs);
+    this._handleSpecialRoomTeleports(units);
 
     if (this.player.alive) {
-      this.camera.follow(this.player);
+      const bounds = this.player.inSpecialRoom ? this.map.specialRoom.cameraBounds : undefined;
+      this.camera.follow(this.player, bounds);
     } else if (this.mode === "host") {
       // Solo mode ends the match the instant the player dies (see below), so
       // there's nothing to spectate there — this only ever runs in host mode.
-      if (!this.spectator) this.spectator = { x: this.player.x, y: this.player.y };
+      if (!this.spectator) this.spectator = { x: this.player.x, y: this.player.y, inSpecialRoom: this.player.inSpecialRoom };
       this._updateSpectatorCamera(dtMs);
-      this.camera.follow(this.spectator);
+      const bounds = this.spectator.inSpecialRoom ? this.map.specialRoom.cameraBounds : undefined;
+      this.camera.follow(this.spectator, bounds);
     }
 
     const aliveCount = this._allUnits().filter((u) => u.alive).length;
@@ -367,6 +431,7 @@ export class Game {
         speed: b.speed,
         range: b.range,
         ownerId: b.ownerId,
+        inSpecialRoom: b.inSpecialRoom,
         createdAt: nowMs,
       });
     }
@@ -424,7 +489,7 @@ export class Game {
       const adapter = this._remoteAdapters.get(uid);
       adapter.applyPayload(payload);
 
-      rp.update(dtMs, adapter, this.map.obstacles, units);
+      rp.update(dtMs, adapter, obstaclesForUnit(this.map, rp), units, this.loot);
 
       // Synchronize host remote player with guest's true reported coordinates
       // This ensures bullets spawn from the exact location the guest saw on their screen.
@@ -433,7 +498,7 @@ export class Game {
         if (drift > 1 && drift < 250) {
           rp.x = adapter.reportedX;
           rp.y = adapter.reportedY;
-          for (const rect of this.map.obstacles) {
+          for (const rect of obstaclesForUnit(this.map, rp)) {
             const push = circleRectPush(rp.x, rp.y, rp.radius, rect);
             if (push) {
               rp.x += push.x;
@@ -447,6 +512,10 @@ export class Game {
         const newBullets = rp.tryShoot(nowMs, units);
         this.bullets.push(...newBullets);
         this._recordBulletEvents(newBullets, nowMs);
+      }
+      if (rp.justAttacked) {
+        rp.justAttacked = false;
+        this._tryBreakCrateNear(rp);
       }
 
       if (rp.falling) continue;
@@ -485,45 +554,49 @@ export class Game {
     this.spectator.y = clamp(this.spectator.y + (dy / len) * SPECTATOR_SPEED * dtSec, 0, WORLD_HEIGHT);
   }
 
-  // Crates take CRATE_OPEN_MS of standing nearby to open (see the hourglass drawn
-  // above them in Loot.js) — stepping out of range mid-open cancels the progress,
-  // so grabbing loot means committing to stay exposed for a moment.
-  _handleCrateOpening(dtMs) {
-    const units = this._allUnits();
+  // Crates are broken open by attacking them — any equipped weapon, not just
+  // fists — called once per landed attack (see the justAttacked hooks above),
+  // reusing that weapon's own range/facing-cone as the reach for the hit, so
+  // a rifle can plink one open from further away than a fist can reach.
+  // Damage-per-hit is its own flat number per weapon (see CRATE_DAMAGE_PER_HIT)
+  // rather than reusing damage-to-units — a shotgun's 6 pellets in particular
+  // don't map cleanly onto "2 shots breaks a crate" if simulated per-pellet,
+  // so this resolves as one hit per trigger pull instead. Splash across
+  // multiple crates isn't allowed — one attack, one crate, same as one enemy.
+  _tryBreakCrateNear(unit) {
+    const crate = findMeleeCrateTarget(unit, this.loot, unit.weapon.range, CRATE_MELEE_CONE_RADIANS);
+    if (!crate) return;
 
-    for (const crate of this.loot) {
-      if (crate.collected) continue;
+    crate.hp -= CRATE_DAMAGE_PER_HIT[unit.weaponKey] ?? unit.weapon.damage;
+    if (crate.hp <= 0) {
+      this._grantCrateContents(unit, crate);
+      crate.collected = true;
+    }
+  }
 
-      let opener = crate.openerId
-        ? units.find((u) => u.id === crate.openerId && u.alive && !u.falling)
-        : null;
-      if (opener && dist(opener.x, opener.y, crate.x, crate.y) > CRATE_INTERACT_RADIUS) {
-        opener = null;
-      }
+  // Walking onto the surface door drops a unit straight into the room below
+  // it; walking onto the ceiling gap from inside sends them back out the
+  // same door — see constants.js's SPECIAL_ROOM_* and Unit.js's
+  // inSpecialRoom/specialRoomAnchor.
+  _handleSpecialRoomTeleports(units) {
+    const room = this.map.specialRoom;
+    if (!room) return;
 
-      if (!opener && crate.openerId) {
-        crate.openerId = null;
-        crate.progress = 0;
-      }
+    for (const unit of units) {
+      if (!unit.alive || unit.falling) continue;
 
-      if (!opener) {
-        for (const unit of units) {
-          if (!unit.alive || unit.falling) continue;
-          if (dist(unit.x, unit.y, crate.x, crate.y) <= CRATE_INTERACT_RADIUS) {
-            opener = unit;
-            crate.openerId = unit.id;
-            break;
-          }
+      if (!unit.inSpecialRoom) {
+        if (dist(unit.x, unit.y, room.door.x, room.door.y) <= SPECIAL_ROOM_HATCH_RADIUS) {
+          unit.inSpecialRoom = true;
+          unit.specialRoomAnchor = { x: room.door.x, y: room.door.y };
+          unit.x = room.spawn.x;
+          unit.y = room.spawn.y;
         }
-      }
-
-      if (!opener) continue;
-
-      crate.progress += dtMs;
-      if (crate.progress >= CRATE_OPEN_MS) {
-        this._grantCrateContents(opener, crate);
-        crate.collected = true;
-        crate.openerId = null;
+      } else if (dist(unit.x, unit.y, room.exit.x, room.exit.y) <= SPECIAL_ROOM_HATCH_RADIUS) {
+        unit.inSpecialRoom = false;
+        unit.specialRoomAnchor = null;
+        unit.x = room.door.x;
+        unit.y = room.door.y + 60; // clear of the door so it doesn't immediately re-trigger
       }
     }
   }
@@ -552,9 +625,21 @@ export class Game {
   _explodeGrenade(grenade, units, nowMs) {
     for (const unit of units) {
       if (!unit.alive) continue;
+      if (!!unit.inSpecialRoom !== !!grenade.inSpecialRoom) continue;
       const d = dist(unit.x, unit.y, grenade.targetX, grenade.targetY);
       if (d > GRENADE_EXPLOSION_RADIUS) continue;
       unit.takeDamage(GRENADE_MAX_DAMAGE * (1 - d / GRENADE_EXPLOSION_RADIUS), grenade.ownerId);
+    }
+
+    // One grenade in blast range always pops a crate outright — no partial
+    // damage/HP tracking for this case, it's just gone, same as "수류탄 1발".
+    const thrower = this._allUnits().find((u) => u.id === grenade.ownerId) ?? null;
+    for (const crate of this.loot) {
+      if (crate.collected) continue;
+      if (!!crate.inSpecialRoom !== !!grenade.inSpecialRoom) continue;
+      if (dist(crate.x, crate.y, grenade.targetX, grenade.targetY) > GRENADE_EXPLOSION_RADIUS) continue;
+      if (thrower) this._grantCrateContents(thrower, crate);
+      crate.collected = true;
     }
 
     this.deathEffects.push({
@@ -564,6 +649,7 @@ export class Game {
       durationMs: GRENADE_EXPLOSION_EFFECT_MS,
       maxRadius: GRENADE_EXPLOSION_VISUAL_RADIUS,
       debrisCount: GRENADE_EXPLOSION_DEBRIS_COUNT,
+      inSpecialRoom: grenade.inSpecialRoom,
     });
   }
 
@@ -585,6 +671,7 @@ export class Game {
       durationMs: DEATH_EFFECT_MS,
       maxRadius: DEATH_EFFECT_RADIUS,
       debrisCount: DEATH_EFFECT_DEBRIS_COUNT,
+      inSpecialRoom: unit.inSpecialRoom,
     });
     this._dropLootFromUnit(unit);
   }
@@ -606,15 +693,26 @@ export class Game {
     for (const drop of drops) {
       const angle = randRange(0, Math.PI * 2);
       const scatterDist = randRange(DEATH_LOOT_SCATTER_RANGE[0], DEATH_LOOT_SCATTER_RANGE[1]);
+      let x = unit.x + Math.cos(angle) * scatterDist;
+      let y = unit.y + Math.sin(angle) * scatterDist;
+      // The special room can sit outside the normal world bounds (see
+      // constants.js's SPECIAL_ROOM_*), so only clamp to them for a death on
+      // the surface — clamping a room death would yank the drop miles away
+      // from the body.
+      if (!unit.inSpecialRoom) {
+        x = clamp(x, 20, WORLD_WIDTH - 20);
+        y = clamp(y, 20, WORLD_HEIGHT - 20);
+      }
       this.loot.push({
         id: `drop_${this._dropIdCounter++}`,
-        x: clamp(unit.x + Math.cos(angle) * scatterDist, 20, WORLD_WIDTH - 20),
-        y: clamp(unit.y + Math.sin(angle) * scatterDist, 20, WORLD_HEIGHT - 20),
+        x,
+        y,
         type: drop.type,
         weapon: drop.weapon,
         collected: false,
-        openerId: null,
-        progress: 0,
+        hp: CRATE_HP,
+        maxHp: CRATE_HP,
+        inSpecialRoom: unit.inSpecialRoom,
       });
     }
   }
@@ -670,6 +768,7 @@ export class Game {
       name: unit.name,
       kills: unit.kills,
       placement: unit.placement,
+      inSpecialRoom: unit.inSpecialRoom,
     };
   }
 
@@ -707,12 +806,13 @@ export class Game {
       loot[item.id] = {
         x: round1(item.x),
         y: round1(item.y),
-        progress: Math.round(item.progress),
-        openerId: item.openerId ?? null,
+        hp: item.hp,
+        maxHp: item.maxHp,
+        inSpecialRoom: item.inSpecialRoom,
       };
     }
 
-    const bullets = this.bullets.map((b) => ({ x: round1(b.x), y: round1(b.y) }));
+    const bullets = this.bullets.map((b) => ({ x: round1(b.x), y: round1(b.y), inSpecialRoom: b.inSpecialRoom }));
     const bulletEvents = this._recentBulletEvents
       .filter((e) => nowMs - e.createdAt < 1200)
       .map((e) => ({
@@ -724,6 +824,7 @@ export class Game {
         speed: e.speed,
         range: e.range,
         ownerId: e.ownerId,
+        inSpecialRoom: e.inSpecialRoom,
         ageMs: Math.max(0, Math.round(nowMs - e.createdAt)),
       }));
 
@@ -736,6 +837,7 @@ export class Game {
       durationMs: e.durationMs,
       maxRadius: e.maxRadius,
       debrisCount: e.debrisCount,
+      inSpecialRoom: e.inSpecialRoom,
     }));
 
     const grenades = this.grenades.map((g) => ({
@@ -744,6 +846,7 @@ export class Game {
       targetX: round1(g.targetX),
       targetY: round1(g.targetY),
       remainingMs: Math.max(0, Math.round(g.explodeAt - nowMs)),
+      inSpecialRoom: g.inSpecialRoom,
     }));
 
     return {
@@ -772,11 +875,14 @@ export class Game {
 
   // A unit hidden in a bush is invisible to everyone except its own controller
   // — unless the local player (or, once dead, the spectator camera) happens to
-  // be close enough to spot them.
+  // be close enough to spot them. A unit inside the special room is invisible
+  // to anyone not also inside it (and vice versa) regardless of distance —
+  // they're not really "there" on the surface at all.
   _visibleToLocalPlayer(unit) {
-    if (!unit.hidden) return true;
     const viewer = this.player.alive ? this.player : this.spectator;
     if (!viewer) return false;
+    if (!!unit.inSpecialRoom !== !!viewer.inSpecialRoom) return false;
+    if (!unit.hidden) return true;
     return dist(viewer.x, viewer.y, unit.x, unit.y) <= HIDDEN_REVEAL_RANGE;
   }
 
@@ -787,13 +893,15 @@ export class Game {
     ctx.fillStyle = "#12210f";
     ctx.fillRect(0, 0, camera.viewWidth, camera.viewHeight);
 
+    const viewerInSpecialRoom = this.player.alive ? this.player.inSpecialRoom : !!this.spectator?.inSpecialRoom;
+
     ctx.save();
     ctx.scale(camera.zoom, camera.zoom);
     ctx.translate(-camera.x, -camera.y);
 
-    this.map.draw(ctx, camera);
-    drawLoot(ctx, camera, this.loot);
-    this.safeZone.draw(ctx, camera);
+    this.map.draw(ctx, camera, viewerInSpecialRoom);
+    drawLoot(ctx, camera, this.loot, viewerInSpecialRoom);
+    if (!viewerInSpecialRoom) this.safeZone.draw(ctx, camera);
 
     for (const bot of this.bots) {
       if (!bot.alive || !this._visibleToLocalPlayer(bot)) continue;
@@ -806,14 +914,17 @@ export class Game {
       rp.drawBody(ctx, "#b565d8", "#555");
     }
     for (const bullet of this.bullets) {
+      if (!!bullet.inSpecialRoom !== viewerInSpecialRoom) continue;
       if (!camera.isRoughlyVisible(bullet.x, bullet.y, BULLET_RADIUS)) continue;
       bullet.draw(ctx);
     }
 
     if (this.player.alive) this.player.draw(ctx);
 
-    drawGrenades(ctx, this.grenades, performance.now());
-    drawDeathEffects(ctx, this.deathEffects, performance.now());
+    const grenadesInView = this.grenades.filter((g) => !!g.inSpecialRoom === viewerInSpecialRoom);
+    const deathEffectsInView = this.deathEffects.filter((e) => !!e.inSpecialRoom === viewerInSpecialRoom);
+    drawGrenades(ctx, grenadesInView, performance.now());
+    drawDeathEffects(ctx, deathEffectsInView, performance.now());
 
     ctx.restore();
   }

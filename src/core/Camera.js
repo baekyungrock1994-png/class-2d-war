@@ -23,9 +23,14 @@ export class Camera {
     return this.viewHeight / this.zoom;
   }
 
-  follow(target) {
-    this.x = clamp(target.x - this.visibleWorldWidth / 2, 0, Math.max(0, WORLD_WIDTH - this.visibleWorldWidth));
-    this.y = clamp(target.y - this.visibleWorldHeight / 2, 0, Math.max(0, WORLD_HEIGHT - this.visibleWorldHeight));
+  // bounds lets the camera stay clamped to a *different* world-space rect than
+  // the normal map — used for the special room, which lives at a fixed offset
+  // far outside 0..WORLD_WIDTH/HEIGHT (see constants.js's SPECIAL_ROOM_*) so it
+  // never overlaps the main map; without an override here the normal clamp
+  // would push the camera back toward the main map and never actually frame it.
+  follow(target, bounds = { x: 0, y: 0, width: WORLD_WIDTH, height: WORLD_HEIGHT }) {
+    this.x = clamp(target.x - this.visibleWorldWidth / 2, bounds.x, Math.max(bounds.x, bounds.x + bounds.width - this.visibleWorldWidth));
+    this.y = clamp(target.y - this.visibleWorldHeight / 2, bounds.y, Math.max(bounds.y, bounds.y + bounds.height - this.visibleWorldHeight));
   }
 
   worldToScreen(x, y) {
